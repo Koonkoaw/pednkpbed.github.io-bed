@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Bed Status — Real-time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+<!-- Supabase JS Client -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --ink: #0d1b2a;
+    --ink-soft: #4a5568;
+    --ink-muted: #94a3b8;
+    --line: #e2e8f0;
+    --line-strong: #cbd5e1;
+
+    --occupied: #e63946;
+    --occupied-bg: #fde8ea;
+    --pending-dc: #ec4899;
+    --pending-dc-bg: #fce7f3;
+    --vacant: #16a34a;
+    --vacant-bg: #dcfce7;
+    --reserved: #eab308;
+    --reserved-bg: #fef9c3;
+
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+    --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.12);
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'IBM Plex Sans Thai', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+    padding-bottom: 40px;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 16px 12px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .title-block h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .title-block .sub {
+    font-size: 11px;
+    color: var(--ink-muted);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--vacant);
+    margin-right: 6px;
+    animation: pulse 2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  .live-dot.disconnected { background: var(--ink-muted); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
+  }
+
+  .tabs {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .tab.active {
+    background: var(--ink);
+    color: white;
+    border-color: var(--ink);
+  }
+  .tab .count {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    opacity: 0.6;
+    margin-left: 4px;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 14px 16px 8px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 8px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .stat.occupied::before { background: var(--occupied); }
+  .stat.pending::before  { background: var(--pending-dc); }
+  .stat.vacant::before   { background: var(--vacant); }
+  .stat.reserved::before { background: var(--reserved); }
+
+  .stat .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    margin-top: 4px;
+  }
+  .stat .label {
+    font-size: 10px;
+    color: var(--ink-muted);
+    margin-top: 5px;
+    line-height: 1.2;
+    font-weight: 500;
+  }
+
+  .ward-section { padding: 4px 16px 0; display: none; }
+  .ward-section.active { display: block; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin: 18px 0 10px;
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .section-head .meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+
+  .bed-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  @media (min-width: 480px) { .bed-grid { grid-template-columns: repeat(5, 1fr); } }
+  @media (min-width: 640px) { .bed-grid { grid-template-columns: repeat(7, 1fr); } }
+
+  .bed {
+    aspect-ratio: 1;
+    border-radius: 12px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 16px;
+    transition: transform 0.12s ease, box-shadow 0.15s ease;
+    position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .bed:active { transform: scale(0.94); }
+  .bed .bed-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 2px;
+    opacity: 0.75;
+  }
+
+  .bed.occupied   { background: var(--occupied-bg); color: var(--occupied); border-color: var(--occupied); }
+  .bed.pending    { background: var(--pending-dc-bg); color: var(--pending-dc); border-color: var(--pending-dc); }
+  .bed.vacant     { background: var(--vacant-bg); color: var(--vacant); border-color: var(--vacant); }
+  .bed.reserved   { background: var(--reserved-bg); color: #a16207; border-color: var(--reserved); }
+
+  .bed.pending::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 12px;
+    border: 2px solid var(--pending-dc);
+    animation: glow 2s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes glow {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(13, 27, 42, 0.5);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    display: none;
+    align-items: flex-end;
+    justify-content: center;
+    animation: fadeIn 0.2s ease;
+  }
+  .modal-overlay.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .modal {
+    background: var(--surface);
+    border-radius: 20px 20px 0 0;
+    width: 100%;
+    max-width: 480px;
+    padding: 20px 20px 28px;
+    animation: slideUp 0.25s ease;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .modal-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--line-strong);
+    border-radius: 2px;
+    margin: -8px auto 16px;
+  }
+  .modal-title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+  .modal-sub {
+    font-size: 13px;
+    color: var(--ink-muted);
+    margin-bottom: 20px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .status-now {
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .status-dot { width: 12px; height: 12px; border-radius: 50%; }
+  .status-dot.occupied { background: var(--occupied); }
+  .status-dot.pending { background: var(--pending-dc); }
+  .status-dot.vacant { background: var(--vacant); }
+  .status-dot.reserved { background: var(--reserved); }
+  .status-text { font-weight: 600; font-size: 14px; }
+
+  .action-btn {
+    width: 100%;
+    padding: 14px 16px;
+    border: none;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: transform 0.1s ease;
+  }
+  .action-btn:active { transform: scale(0.98); }
+  .action-btn .desc {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.7;
+    margin-top: 2px;
+  }
+  .action-btn .left { text-align: left; }
+  .action-btn .arrow {
+    font-family: 'JetBrains Mono', monospace;
+    opacity: 0.5;
+  }
+  .btn-admit    { background: var(--occupied); color: white; }
+  .btn-reserve  { background: var(--reserved); color: #422006; }
+  .btn-discharge-order { background: var(--pending-dc); color: white; }
+  .btn-discharge-done  { background: var(--vacant); color: white; }
+  .btn-cancel-reserve  { background: var(--ink-muted); color: white; }
+  .btn-secondary { background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
+
+  .modal-close {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    margin-top: 8px;
+    cursor: pointer;
+  }
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 14px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    margin-top: 24px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+  .legend-swatch {
+    width: 14px; height: 14px;
+    border-radius: 4px;
+    border: 1.5px solid;
+    flex-shrink: 0;
+  }
+  .legend-swatch.occupied { background: var(--occupied-bg); border-color: var(--occupied); }
+  .legend-swatch.pending  { background: var(--pending-dc-bg); border-color: var(--pending-dc); }
+  .legend-swatch.vacant   { background: var(--vacant-bg); border-color: var(--vacant); }
+  .legend-swatch.reserved { background: var(--reserved-bg); border-color: var(--reserved); }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: var(--ink);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 30px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    z-index: 200;
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+
+  .last-update {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-muted);
+    text-align: center;
+    padding: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  /* Setup screen */
+  .setup-screen {
+    max-width: 480px;
+    margin: 40px auto;
+    padding: 28px 24px;
+    background: var(--surface);
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-md);
+  }
+  .setup-screen h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+  }
+  .setup-screen p {
+    color: var(--ink-soft);
+    font-size: 14px;
+    margin: 0 0 20px;
+  }
+  .setup-screen label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .setup-screen input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    margin-bottom: 16px;
+    background: var(--bg);
+  }
+  .setup-screen input:focus {
+    outline: none;
+    border-color: var(--ink);
+    background: white;
+  }
+  .setup-btn {
+    width: 100%;
+    padding: 14px;
+    background: var(--ink);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .setup-error {
+    background: var(--occupied-bg);
+    color: var(--occupied);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .setup-error.show { display: block; }
+  .setup-help {
+    font-size: 12px;
+    color: var(--ink-muted);
+    line-height: 1.6;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+  .setup-help code {
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+
+  #app { display: none; }
+  #app.ready { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Setup screen (shown if no credentials) -->
+<div class="setup-screen" id="setupScreen">
+  <h2>เชื่อมต่อ Supabase</h2>
+  <p>ใส่ URL และ anon key ของโปรเจกต์ Supabase ของคุณ — เก็บไว้ในเครื่องนี้เท่านั้น</p>
+  <div class="setup-error" id="setupError"></div>
+  <label for="supaUrl">SUPABASE URL</label>
+  <input type="text" id="supaUrl" placeholder="https://xxxxx.supabase.co" autocomplete="off" autocapitalize="off" autocorrect="off" />
+  <label for="supaKey">ANON KEY</label>
+  <input type="text" id="supaKey" placeholder="eyJ..." autocomplete="off" autocapitalize="off" autocorrect="off" />
+  <button class="setup-btn" id="setupBtn">เชื่อมต่อ</button>
+  <div class="setup-help">
+    หา URL/key ได้ที่ Supabase Dashboard → Project Settings → API<br>
+    ดูคู่มือ setup database ใน <code>SETUP.md</code> ที่แนบมาด้วย
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <header>
+    <div class="header-row">
+      <div class="title-block">
+        <h1>Bed Status</h1>
+        <div class="sub"><span class="live-dot" id="liveDot"></span><span id="liveText">CONNECTING...</span></div>
+      </div>
+      <div class="last-update" id="lastUpdate">—</div>
+    </div>
+    <div class="tabs" id="wardTabs"></div>
+  </header>
+
+  <div class="stats">
+    <div class="stat occupied"><div class="num" id="statOccupied">0</div><div class="label">เตียงเต็ม</div></div>
+    <div class="stat vacant"><div class="num" id="statVacant">0</div><div class="label">ว่างจริง</div></div>
+    <div class="stat pending"><div class="num" id="statPending">0</div><div class="label">รอ D/C</div></div>
+    <div class="stat reserved"><div class="num" id="statReserved">0</div><div class="label">จองรอเข้า</div></div>
+  </div>
+
+  <div id="wardContainer"></div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="legend-swatch occupied"></span>เตียงเต็ม</div>
+    <div class="legend-item"><span class="legend-swatch pending"></span>สั่ง D/C รอออก</div>
+    <div class="legend-item"><span class="legend-swatch vacant"></span>ว่างจริง</div>
+    <div class="legend-item"><span class="legend-swatch reserved"></span>จองรอเข้า</div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title" id="modalTitle">เตียง</h3>
+    <div class="modal-sub" id="modalSub">—</div>
+    <div class="status-now" id="modalStatus">
+      <div class="status-dot" id="modalStatusDot"></div>
+      <div class="status-text" id="modalStatusText">—</div>
+    </div>
+    <div id="modalActions"></div>
+    <button class="modal-close" onclick="closeModal()">ปิด</button>
+  </div>
+</div>
+
+<div class="toast" id="toast">บันทึกแล้ว</div>
+
+<script>
+/* =========================================================
+   Bed Management — Supabase Real-time
+   Schema:
+     table beds (
+       ward text,
+       bed_number int,
+       status text,         -- 'vacant' | 'occupied' | 'pending_dc' | 'reserved'
+       updated_at timestamptz default now(),
+       primary key (ward, bed_number)
+     )
+========================================================= */
+
+const WARDS = [
+  { id: 'picu', name: 'PICU',  count: 8 },
+  { id: '12_2', name: '12/2', count: 28 },
+  { id: '9_3',  name: '9/3',  count: 15 }
+];
+
+const STATUS_LABELS = {
+  vacant:     'ว่างจริง',
+  occupied:   'มีคนไข้',
+  pending_dc: 'สั่ง D/C รอคนไข้ออก',
+  reserved:   'จองรอเข้า'
+};
+
+const CRED_KEY = 'bed_supabase_creds';
+
+/* ═══════════════════════════════════════════════════════════════════
+   👇 ใส่ Supabase ANON KEY ของคุณตรงนี้ระหว่างเครื่องหมายคำพูด 👇
+   ═══════════════════════════════════════════════════════════════════
+   1. เปิดไฟล์นี้ด้วย Notepad / TextEdit
+   2. หาบรรทัด EMBEDDED_KEY = ''
+   3. วาง anon key ของคุณระหว่าง '' ให้กลายเป็น:
+      const EMBEDDED_KEY = 'eyJhbGc...your_key_here';
+   4. บันทึกไฟล์
+   ═══════════════════════════════════════════════════════════════════ */
+const EMBEDDED_URL = 'https://fpebfiwmramggiggpysv.supabase.co';
+const EMBEDDED_KEY = 'sb_publishable_RlcGZ2RC6pbnj-5-5vq_kA_Z_85PP4q';
+
+let db = null;
+let state = freshState();
+let activeWard = WARDS[0].id;
+let currentBed = null;
+
+/* ---------- Setup screen ---------- */
+function showSetup(errorMsg = null) {
+  document.getElementById('setupScreen').style.display = 'block';
+  document.getElementById('app').classList.remove('ready');
+  if (errorMsg) {
+    const e = document.getElementById('setupError');
+    e.textContent = errorMsg;
+    e.classList.add('show');
+  }
+}
+function hideSetup() {
+  document.getElementById('setupScreen').style.display = 'none';
+  document.getElementById('app').classList.add('ready');
+}
+
+document.getElementById('setupBtn').onclick = async () => {
+  const url = document.getElementById('supaUrl').value.trim();
+  const key = document.getElementById('supaKey').value.trim();
+  if (!url || !key) {
+    return showSetup('กรุณาใส่ URL และ Key ทั้งสองช่อง');
+  }
+  if (!url.startsWith('https://') || !url.includes('.supabase.co')) {
+    return showSetup('URL ต้องเป็นรูปแบบ https://xxx.supabase.co');
+  }
+  localStorage.setItem(CRED_KEY, JSON.stringify({ url, key }));
+  await initSupabase(url, key);
+};
+
+/* ---------- Supabase init ---------- */
+async function initSupabase(url, key) {
+  try {
+    db = window.supabase.createClient(url, key);
+    // Test connection by reading
+    const { data, error } = await db.from('beds').select('*').limit(1);
+    if (error) {
+      showSetup('เชื่อมต่อไม่สำเร็จ: ' + error.message);
+      return;
+    }
+    hideSetup();
+    await ensureBedsExist();
+    await fetchAll();
+    subscribeRealtime();
+    setLive(true);
+  } catch (e) {
+    showSetup('Error: ' + e.message);
+  }
+}
+
+/* If table is empty, seed all bed rows once */
+async function ensureBedsExist() {
+  const { count, error } = await db
+    .from('beds')
+    .select('*', { count: 'exact', head: true });
+  if (error) throw error;
+  if (count === 0) {
+    const rows = [];
+    WARDS.forEach(w => {
+      for (let i = 1; i <= w.count; i++) {
+        rows.push({ ward: w.id, bed_number: i, status: 'vacant' });
+      }
+    });
+    const { error: insErr } = await db.from('beds').insert(rows);
+    if (insErr) throw insErr;
+  }
+}
+
+/* ---------- State ---------- */
+function freshState() {
+  const s = {};
+  WARDS.forEach(w => {
+    s[w.id] = Array.from({ length: w.count }, () => 'vacant');
+  });
+  return s;
+}
+
+async function fetchAll() {
+  const { data, error } = await db.from('beds').select('*');
+  if (error) {
+    showToast('โหลดข้อมูลไม่สำเร็จ');
+    return;
+  }
+  const fresh = freshState();
+  data.forEach(row => {
+    if (fresh[row.ward] && row.bed_number >= 1 && row.bed_number <= fresh[row.ward].length) {
+      fresh[row.ward][row.bed_number - 1] = row.status;
+    }
+  });
+  state = fresh;
+  buildTabs();
+  buildWardSections();
+  renderWards();
+  setLastUpdate();
+}
+
+/* ---------- Realtime subscription ---------- */
+function subscribeRealtime() {
+  db
+    .channel('beds-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'beds' },
+      (payload) => {
+        const row = payload.new || payload.old;
+        if (!row) return;
+        if (state[row.ward] && row.bed_number >= 1 && row.bed_number <= state[row.ward].length) {
+          if (payload.new) {
+            state[row.ward][row.bed_number - 1] = payload.new.status;
+          }
+          renderWards();
+          setLastUpdate();
+        }
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') setLive(true);
+      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        setLive(false);
+      }
+    });
+}
+
+function setLive(isLive) {
+  const dot = document.getElementById('liveDot');
+  const txt = document.getElementById('liveText');
+  if (isLive) {
+    dot.classList.remove('disconnected');
+    txt.textContent = 'LIVE · ALL WARDS';
+  } else {
+    dot.classList.add('disconnected');
+    txt.textContent = 'OFFLINE';
+  }
+}
+
+function setLastUpdate() {
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2,'0');
+  const mm = String(t.getMinutes()).padStart(2,'0');
+  const ss = String(t.getSeconds()).padStart(2,'0');
+  document.getElementById('lastUpdate').textContent = `${hh}:${mm}:${ss}`;
+}
+
+/* ---------- UI build ---------- */
+function buildTabs() {
+  const tabs = document.getElementById('wardTabs');
+  tabs.innerHTML = '';
+  WARDS.forEach(w => {
+    const btn = document.createElement('button');
+    btn.className = 'tab' + (w.id === activeWard ? ' active' : '');
+    btn.innerHTML = `${w.name} <span class="count">${w.count}</span>`;
+    btn.onclick = () => {
+      activeWard = w.id;
+      buildTabs();
+      renderWards();
+    };
+    tabs.appendChild(btn);
+  });
+}
+
+function buildWardSections() {
+  const c = document.getElementById('wardContainer');
+  c.innerHTML = '';
+  WARDS.forEach(w => {
+    const section = document.createElement('div');
+    section.className = 'ward-section';
+    section.dataset.ward = w.id;
+    section.innerHTML = `
+      <div class="section-head">
+        <h2>${w.name}</h2>
+        <div class="meta" id="meta_${w.id}">—</div>
+      </div>
+      <div class="bed-grid" id="grid_${w.id}"></div>
+    `;
+    c.appendChild(section);
+  });
+}
+
+function renderWards() {
+  document.querySelectorAll('.ward-section').forEach(s => {
+    s.classList.toggle('active', s.dataset.ward === activeWard);
+  });
+  WARDS.forEach(w => {
+    const grid = document.getElementById(`grid_${w.id}`);
+    if (!grid) return;
+    grid.innerHTML = '';
+    state[w.id].forEach((status, idx) => {
+      const bed = document.createElement('div');
+      bed.className = 'bed ' + statusClass(status);
+      bed.innerHTML = `${idx + 1}<span class="bed-label">${shortLabel(status)}</span>`;
+      bed.onclick = () => openModal(w.id, idx);
+      grid.appendChild(bed);
+    });
+    const counts = countStatuses(state[w.id]);
+    document.getElementById(`meta_${w.id}`).textContent =
+      `${counts.occupied + counts.pending_dc}/${w.count} ใช้งาน · ว่าง ${counts.vacant}`;
+  });
+  renderStats();
+}
+
+function statusClass(s) {
+  return { vacant:'vacant', occupied:'occupied', pending_dc:'pending', reserved:'reserved' }[s];
+}
+function shortLabel(s) {
+  return { vacant:'ว่าง', occupied:'เต็ม', pending_dc:'D/C', reserved:'จอง' }[s];
+}
+function countStatuses(arr) {
+  const c = { vacant:0, occupied:0, pending_dc:0, reserved:0 };
+  arr.forEach(s => c[s]++);
+  return c;
+}
+function renderStats() {
+  const total = { vacant:0, occupied:0, pending_dc:0, reserved:0 };
+  WARDS.forEach(w => {
+    const c = countStatuses(state[w.id]);
+    Object.keys(total).forEach(k => total[k] += c[k]);
+  });
+  document.getElementById('statOccupied').textContent = total.occupied;
+  document.getElementById('statVacant').textContent   = total.vacant;
+  document.getElementById('statPending').textContent  = total.pending_dc;
+  document.getElementById('statReserved').textContent = total.reserved;
+}
+
+/* ---------- Modal ---------- */
+function openModal(wardId, idx) {
+  currentBed = { ward: wardId, idx };
+  const ward = WARDS.find(w => w.id === wardId);
+  const status = state[wardId][idx];
+
+  document.getElementById('modalTitle').textContent = `${ward.name} — เตียง ${idx + 1}`;
+  document.getElementById('modalSub').textContent = `BED ${ward.name.toUpperCase()}-${String(idx+1).padStart(2,'0')}`;
+
+  document.getElementById('modalStatusDot').className = 'status-dot ' + statusClass(status);
+  document.getElementById('modalStatusText').textContent = STATUS_LABELS[status];
+
+  const actions = document.getElementById('modalActions');
+  actions.innerHTML = '';
+
+  if (status === 'vacant') {
+    addAction(actions, 'btn-admit', 'รับคนไข้ Admit', 'หมอ — เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
+    addAction(actions, 'btn-reserve', 'จองเตียง (รอเข้า)', 'พยาบาล/หมอ — รอคนไข้ใหม่', () => setStatus('reserved'));
+  } else if (status === 'reserved') {
+    addAction(actions, 'btn-admit', 'คนไข้เข้าแล้ว', 'เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
+    addAction(actions, 'btn-cancel-reserve', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
+  } else if (status === 'occupied') {
+    addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'หมอ — รอคนไข้ออกจริง', () => setStatus('pending_dc'));
+  } else if (status === 'pending_dc') {
+    addAction(actions, 'btn-discharge-done', 'คนไข้ออกแล้ว ✓', 'พยาบาล — เคลียร์เตียง', () => setStatus('vacant'));
+    addAction(actions, 'btn-secondary', 'ยกเลิก D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+  }
+
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+function addAction(container, cls, label, desc, handler) {
+  const btn = document.createElement('button');
+  btn.className = 'action-btn ' + cls;
+  btn.innerHTML = `
+    <div class="left">
+      <div>${label}</div>
+      <div class="desc">${desc}</div>
+    </div>
+    <div class="arrow">→</div>
+  `;
+  btn.onclick = handler;
+  container.appendChild(btn);
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+  currentBed = null;
+}
+
+async function setStatus(newStatus) {
+  if (!currentBed) return;
+  const { ward, idx } = currentBed;
+  // Optimistic local update
+  state[ward][idx] = newStatus;
+  renderWards();
+  closeModal();
+
+  const { error } = await db
+    .from('beds')
+    .update({ status: newStatus, updated_at: new Date().toISOString() })
+    .eq('ward', ward)
+    .eq('bed_number', idx + 1);
+
+  if (error) {
+    showToast('บันทึกไม่สำเร็จ: ' + error.message);
+    // Re-fetch to recover
+    await fetchAll();
+  } else {
+    showToast(`อัพเดทแล้ว → ${STATUS_LABELS[newStatus]}`);
+  }
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+document.getElementById('modalOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'modalOverlay') closeModal();
+});
+
+/* Long-press on title to reset credentials */
+let titlePressTimer = null;
+document.querySelector('header h1')?.addEventListener('mousedown', startTitlePress);
+document.querySelector('header h1')?.addEventListener('touchstart', startTitlePress);
+function startTitlePress() {
+  titlePressTimer = setTimeout(() => {
+    if (confirm('รีเซ็ตการเชื่อมต่อ Supabase?')) {
+      localStorage.removeItem(CRED_KEY);
+      location.reload();
+    }
+  }, 2000);
+}
+['mouseup','mouseleave','touchend','touchcancel'].forEach(ev => {
+  document.querySelector('header h1')?.addEventListener(ev, () => clearTimeout(titlePressTimer));
+});
+
+/* ---------- Boot ---------- */
+(async () => {
+  // Priority 1: Use embedded URL/KEY if both present
+  if (EMBEDDED_URL && EMBEDDED_KEY) {
+    try {
+      await initSupabase(EMBEDDED_URL, EMBEDDED_KEY);
+      return;
+    } catch (e) {
+      showSetup('Embedded credentials ใช้ไม่ได้: ' + e.message);
+      return;
+    }
+  }
+  // Priority 2: Use saved credentials from previous setup
+  const saved = localStorage.getItem(CRED_KEY);
+  if (saved) {
+    try {
+      const { url, key } = JSON.parse(saved);
+      await initSupabase(url, key);
+      return;
+    } catch (e) {
+      showSetup('โหลด credentials ผิดพลาด');
+      return;
+    }
+  }
+  // Priority 3: Show setup screen
+  showSetup();
+})();
+</script>
+</body>
+</html>
