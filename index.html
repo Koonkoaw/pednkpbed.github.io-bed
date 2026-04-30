@@ -1,639 +1,768 @@
+
 <!DOCTYPE html>
 <html lang="th">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>Bed Status — Real-time</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Bed Status</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-
-<!-- Supabase JS Client -->
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Press+Start+2P&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+<!--
+═════════════ SUPABASE SCHEMA — รันใน SQL Editor ก่อนใช้งาน ═════════════
+create table if not exists beds (
+  ward text not null, bed_number int not null,
+  status text not null default 'vacant',
+  updated_at timestamptz default now(),
+  primary key (ward, bed_number)
+);
+create table if not exists admit_queue (
+  id bigserial primary key,
+  ward text not null, source text not null,
+  note text, created_at timestamptz default now(),
+  created_by text
+);
+alter table beds enable row level security;
+alter table admit_queue enable row level security;
+drop policy if exists "anon all beds" on beds;
+create policy "anon all beds" on beds for all using (true) with check (true);
+drop policy if exists "anon all admit_queue" on admit_queue;
+create policy "anon all admit_queue" on admit_queue for all using (true) with check (true);
+-- Dashboard → Database → Replication → เปิด realtime ให้ทั้ง 2 ตาราง
+═══════════════════════════════════════════════════════════════════════
+-->
+
 <style>
-  :root {
-    --bg: #f4f5f7;
-    --surface: #ffffff;
-    --ink: #0d1b2a;
-    --ink-soft: #4a5568;
-    --ink-muted: #94a3b8;
-    --line: #e2e8f0;
-    --line-strong: #cbd5e1;
+:root {
+  --bg: #f4f5f7; --surface: #fff;
+  --ink: #0d1b2a; --ink-soft: #4a5568; --ink-muted: #94a3b8;
+  --line: #e2e8f0; --line-strong: #cbd5e1;
 
-    --occupied: #e63946;
-    --occupied-bg: #fde8ea;
-    --pending-dc: #ec4899;
-    --pending-dc-bg: #fce7f3;
-    --vacant: #16a34a;
-    --vacant-bg: #dcfce7;
-    --reserved: #eab308;
-    --reserved-bg: #fef9c3;
+  /* Softer pastel accents — borders & subtle backgrounds */
+  --occupied: #ef4444;          /* red text */
+  --occupied-bd: #fca5a5;       /* soft red border */
+  --occupied-bg: #fff1f1;       /* very pale red bg */
 
-    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
-    --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.12);
-  }
+  --pending-dc: #ec4899;        /* pink text */
+  --pending-dc-bd: #f9a8d4;     /* soft pink border */
+  --pending-dc-bg: #fdf2f8;     /* very pale pink bg */
 
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    font-family: 'IBM Plex Sans Thai', -apple-system, sans-serif;
-    background: var(--bg);
-    color: var(--ink);
-    font-size: 15px;
-    line-height: 1.5;
-    min-height: 100vh;
-    padding-bottom: 40px;
-  }
+  --vacant: #16a34a;            /* green text */
+  --vacant-bd: #86efac;         /* soft green border */
+  --vacant-bg: #f0fdf4;         /* very pale green bg */
 
-  header {
-    background: var(--surface);
-    border-bottom: 1px solid var(--line);
-    padding: 14px 16px 12px;
-    position: sticky;
-    top: 0;
-    z-index: 50;
-  }
-  .header-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .title-block h1 {
-    margin: 0;
-    font-size: 17px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-  }
-  .title-block .sub {
-    font-size: 11px;
-    color: var(--ink-muted);
-    font-family: 'JetBrains Mono', monospace;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    margin-top: 2px;
-  }
-  .live-dot {
-    display: inline-block;
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--vacant);
-    margin-right: 6px;
-    animation: pulse 2s ease-in-out infinite;
-    vertical-align: middle;
-  }
-  .live-dot.disconnected { background: var(--ink-muted); animation: none; }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.85); }
-  }
+  --reserved: #d97706;          /* amber text */
+  --reserved-bd: #fcd34d;       /* soft amber border */
+  --reserved-bg: #fffbeb;       /* very pale amber bg */
 
-  .tabs {
-    display: flex;
-    gap: 6px;
-    margin-top: 12px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tab {
-    flex: 1;
-    min-width: 0;
-    padding: 10px 12px;
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    white-space: nowrap;
-  }
-  .tab.active {
-    background: var(--ink);
-    color: white;
-    border-color: var(--ink);
-  }
-  .tab .count {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    opacity: 0.6;
-    margin-left: 4px;
-  }
+  --admit-q: #2563eb;           /* blue text */
+  --admit-q-bd: #93c5fd;        /* soft blue border */
+  --admit-q-bg: #eff6ff;        /* very pale blue bg */
 
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    padding: 14px 16px 8px;
-  }
-  .stat {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 10px 8px;
-    text-align: center;
-    position: relative;
-    overflow: hidden;
-  }
-  .stat::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-  }
-  .stat.occupied::before { background: var(--occupied); }
-  .stat.pending::before  { background: var(--pending-dc); }
-  .stat.vacant::before   { background: var(--vacant); }
-  .stat.reserved::before { background: var(--reserved); }
+  --neg-bg:#ede9fe; --neg-bd:#8b5cf6;
+  --shr-bg:#e0f2fe; --shr-bd:#0ea5e9;
+  --ste-bg:#fef3c7; --ste-bd:#f59e0b;
+  --iso-bg:#ffe4e6; --iso-bd:#f43f5e;
+  --can-bg:#f1f5f9; --can-bd:#64748b;
+  --shadow-lg: 0 12px 32px rgba(15,23,42,.18);
 
-  .stat .num {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 22px;
-    font-weight: 700;
-    line-height: 1;
-    margin-top: 4px;
-  }
-  .stat .label {
-    font-size: 10px;
-    color: var(--ink-muted);
-    margin-top: 5px;
-    line-height: 1.2;
-    font-weight: 500;
-  }
+  /* Pixel font for accents only */
+  --font-pixel: 'Press Start 2P', 'JetBrains Mono', monospace;
+  --font-thai: 'IBM Plex Sans Thai', -apple-system, sans-serif;
+}
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; margin:0; padding:0; }
+html,body { height:100%; overflow:hidden; overscroll-behavior:none; }
+body {
+  font-family:'IBM Plex Sans Thai',-apple-system,sans-serif;
+  background:var(--bg); color:var(--ink);
+  font-size:14px; line-height:1.4;
+  user-select:none; -webkit-user-select:none;
+}
 
-  .ward-section { padding: 4px 16px 0; display: none; }
-  .ward-section.active { display: block; }
-  .section-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin: 18px 0 10px;
-  }
-  .section-head h2 {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-  }
-  .section-head .meta {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: var(--ink-muted);
-  }
+/* Setup */
+.setup-screen { position:fixed; inset:0; background:var(--bg); padding:24px; overflow-y:auto; z-index:200; display:none; }
+.setup-screen.show { display:block; }
+.setup-card { max-width:460px; margin:40px auto; padding:24px 20px; background:var(--surface); border-radius:16px; border:1px solid var(--line); }
+.setup-card h2 { font-size:18px; margin-bottom:6px; }
+.setup-card p { color:var(--ink-soft); font-size:13px; margin-bottom:18px; }
+.setup-card label { display:block; font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; text-transform:uppercase; letter-spacing:.05em; }
+.setup-card input { width:100%; padding:11px 13px; border:1px solid var(--line-strong); border-radius:10px; font-family:'JetBrains Mono',monospace; font-size:12px; margin-bottom:14px; background:var(--bg); }
+.setup-card input:focus { outline:none; border-color:var(--ink); background:white; }
+.setup-btn { width:100%; padding:13px; background:var(--ink); color:white; border:none; border-radius:10px; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer; }
+.setup-error { background:var(--occupied-bg); color:var(--occupied); padding:10px 13px; border-radius:8px; font-size:12px; margin-bottom:14px; display:none; }
+.setup-error.show { display:block; }
 
-  .bed-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-  }
-  @media (min-width: 480px) { .bed-grid { grid-template-columns: repeat(5, 1fr); } }
-  @media (min-width: 640px) { .bed-grid { grid-template-columns: repeat(7, 1fr); } }
+/* App: full viewport, no scroll */
+#app { display:none; height:100vh; height:100dvh; flex-direction:column; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+#app.ready { display:flex; }
 
-  .bed {
-    aspect-ratio: 1;
-    border-radius: 12px;
-    border: 2px solid transparent;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 700;
-    font-size: 16px;
-    transition: transform 0.12s ease, box-shadow 0.15s ease;
-    position: relative;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  .bed:active { transform: scale(0.94); }
-  .bed .bed-label {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-top: 2px;
-    opacity: 0.75;
-  }
+/* Top bar */
+.topbar { flex:0 0 auto; background:var(--surface); border-bottom:1px solid var(--line); padding:8px 12px 7px; }
+.topbar-row { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+.brand { display:flex; align-items:center; gap:8px; min-width:0; }
+.brand h1 {
+  font-family:var(--font-pixel);
+  font-size:12px;
+  font-weight:400;
+  letter-spacing:.02em;
+  white-space:nowrap;
+  color:var(--ink);
+}
+.live-dot {
+  display:inline-block; width:9px; height:9px;
+  background:var(--vacant);
+  animation:pulse 1.2s steps(2,end) infinite;
+  flex-shrink:0;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.12);
+}
+.live-dot.disconnected { background:var(--ink-muted); animation:none; }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+.clock {
+  font-family:var(--font-pixel);
+  font-size:11px;
+  color:var(--ink-soft);
+  font-weight:400;
+  white-space:nowrap;
+}
+.shift-tag {
+  padding:5px 9px;
+  font-family:var(--font-pixel);
+  font-size:9px;
+  font-weight:400;
+  letter-spacing:.04em;
+  white-space:nowrap;
+  border:2px solid currentColor;
+  background:var(--surface);
+}
+.shift-tag.morning { color:#b45309; }
+.shift-tag.afternoon { color:#c2410c; }
+.shift-tag.night { color:#1e293b; background:#fef3c7; }
 
-  .bed.occupied   { background: var(--occupied-bg); color: var(--occupied); border-color: var(--occupied); }
-  .bed.pending    { background: var(--pending-dc-bg); color: var(--pending-dc); border-color: var(--pending-dc); }
-  .bed.vacant     { background: var(--vacant-bg); color: var(--vacant); border-color: var(--vacant); }
-  .bed.reserved   { background: var(--reserved-bg); color: #a16207; border-color: var(--reserved); }
+/* Stats infographic — single row */
+.stats-strip { flex:0 0 auto; display:grid; grid-template-columns:repeat(5,1fr); gap:6px; padding:9px 10px; background:var(--surface); border-bottom:1px solid var(--line); }
+.stat-cell {
+  display:flex; flex-direction:column; align-items:center;
+  padding:11px 4px 9px;
+  background:var(--surface);
+  border:2px solid var(--line);
+  border-radius:10px;
+  position:relative;
+  overflow:hidden;
+}
+/* Top color stripe accent */
+.stat-cell::before {
+  content:'';
+  position:absolute; top:0; left:0; right:0;
+  height:5px;
+}
+.stat-cell .num {
+  font-family:var(--font-pixel);
+  font-size:20px;
+  font-weight:400;
+  line-height:1;
+  color:var(--ink);
+  margin-top:3px;
+}
+.stat-cell .lbl {
+  font-family:var(--font-thai);
+  font-size:13px;
+  color:var(--ink-soft);
+  margin-top:7px;
+  font-weight:600;
+  line-height:1.1;
+  text-align:center;
+}
+.stat-cell.occ::before { background:var(--occupied); }
+.stat-cell.vac::before { background:var(--vacant); }
+.stat-cell.dc::before  { background:var(--pending-dc); }
+.stat-cell.res::before { background:var(--reserved); }
+.stat-cell.qad         { cursor:pointer; }
+.stat-cell.qad::before { background:var(--admit-q); }
+.stat-cell.qad::after  { content:'⌄'; position:absolute; top:7px; right:7px; font-size:13px; color:var(--admit-q); font-weight:800; }
 
-  .bed.pending::after {
-    content: '';
-    position: absolute;
-    inset: -2px;
-    border-radius: 12px;
-    border: 2px solid var(--pending-dc);
-    animation: glow 2s ease-in-out infinite;
-    pointer-events: none;
-  }
-  @keyframes glow {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 1; }
-  }
+/* Tabs */
+.tabs { flex:0 0 auto; display:flex; gap:7px; padding:9px 10px; background:var(--surface); border-bottom:1px solid var(--line); }
+.tab {
+  flex:1; min-width:0;
+  padding:16px 8px;
+  background:var(--surface);
+  border:2.5px solid var(--line);
+  border-radius:11px;
+  font-family:var(--font-pixel);
+  font-size:14px;
+  font-weight:400;
+  color:var(--ink-soft);
+  cursor:pointer;
+  transition:all .12s ease;
+  white-space:nowrap;
+  display:flex; align-items:center; justify-content:center;
+  gap:8px;
+  letter-spacing:.02em;
+}
+.tab.active {
+  background:var(--ink);
+  color:#fff;
+  border-color:var(--ink);
+}
+.tab .count {
+  font-family:var(--font-pixel);
+  font-size:11px;
+  padding:3px 7px;
+  border-radius:5px;
+  background:var(--bg);
+  color:var(--ink-soft);
+  border:1.5px solid var(--line-strong);
+}
+.tab.active .count {
+  background:#FFD600;
+  color:var(--ink);
+  border-color:#FFD600;
+}
 
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(13, 27, 42, 0.5);
-    backdrop-filter: blur(4px);
-    z-index: 100;
-    display: none;
-    align-items: flex-end;
-    justify-content: center;
-    animation: fadeIn 0.2s ease;
-  }
-  .modal-overlay.active { display: flex; }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+/* Map fills remaining — scrollable when content overflows */
+.map-area { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; padding:10px 12px; min-height:0; -webkit-overflow-scrolling:touch; }
+.ward-section { display:none; flex-direction:column; gap:14px; padding-bottom:8px; }
+.ward-section.active { display:flex; }
 
-  .modal {
-    background: var(--surface);
-    border-radius: 20px 20px 0 0;
-    width: 100%;
-    max-width: 480px;
-    padding: 20px 20px 28px;
-    animation: slideUp 0.25s ease;
-    max-height: 85vh;
-    overflow-y: auto;
-  }
-  .modal-handle {
-    width: 36px;
-    height: 4px;
-    background: var(--line-strong);
-    border-radius: 2px;
-    margin: -8px auto 16px;
-  }
-  .modal-title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
-  .modal-sub {
-    font-size: 13px;
-    color: var(--ink-muted);
-    margin-bottom: 20px;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .status-now {
-    background: var(--bg);
-    border-radius: 10px;
-    padding: 12px 14px;
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .status-dot { width: 12px; height: 12px; border-radius: 50%; }
-  .status-dot.occupied { background: var(--occupied); }
-  .status-dot.pending { background: var(--pending-dc); }
-  .status-dot.vacant { background: var(--vacant); }
-  .status-dot.reserved { background: var(--reserved); }
-  .status-text { font-weight: 600; font-size: 14px; }
+.ward-header {
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  margin-bottom:-4px;
+  padding:0 2px;
+}
+.ward-title {
+  font-family:var(--font-pixel);
+  font-size:13px;
+  color:var(--ink);
+}
+.ward-summary {
+  font-family:var(--font-thai);
+  font-size:13px;
+  color:var(--ink-muted);
+  font-weight:600;
+}
 
-  .action-btn {
-    width: 100%;
-    padding: 14px 16px;
-    border: none;
-    border-radius: 12px;
-    font-family: inherit;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    transition: transform 0.1s ease;
-  }
-  .action-btn:active { transform: scale(0.98); }
-  .action-btn .desc {
-    font-size: 11px;
-    font-weight: 500;
-    opacity: 0.7;
-    margin-top: 2px;
-  }
-  .action-btn .left { text-align: left; }
-  .action-btn .arrow {
-    font-family: 'JetBrains Mono', monospace;
-    opacity: 0.5;
-  }
-  .btn-admit    { background: var(--occupied); color: white; }
-  .btn-reserve  { background: var(--reserved); color: #422006; }
-  .btn-discharge-order { background: var(--pending-dc); color: white; }
-  .btn-discharge-done  { background: var(--vacant); color: white; }
-  .btn-cancel-reserve  { background: var(--ink-muted); color: white; }
-  .btn-secondary { background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
+.room-group { border:1.5px dashed transparent; border-radius:11px; padding:16px 9px 9px; position:relative; flex:0 0 auto; }
+.room-group .group-label {
+  position:absolute; top:-10px; left:11px;
+  padding:1px 8px;
+  font-family:var(--font-thai);
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.01em;
+  line-height:1.3;
+  background:var(--bg);
+  border-radius:4px;
+}
+.room-group.negative { background:var(--neg-bg); border-color:var(--neg-bd); } .room-group.negative .group-label { color:var(--neg-bd); background:var(--bg); }
+.room-group.shared { background:var(--shr-bg); border-color:var(--shr-bd); } .room-group.shared .group-label { color:var(--shr-bd); background:var(--bg); }
+.room-group.sterile { background:var(--ste-bg); border-color:var(--ste-bd); } .room-group.sterile .group-label { color:var(--ste-bd); background:var(--bg); }
+.room-group.isolation { background:var(--iso-bg); border-color:var(--iso-bd); } .room-group.isolation .group-label { color:var(--iso-bd); background:var(--bg); }
+.room-group.canvas { background:var(--can-bg); border-color:var(--can-bd); } .room-group.canvas .group-label { color:var(--can-bd); background:var(--bg); }
+.room-group.normal { background:transparent; border-color:var(--line); } .room-group.normal .group-label { color:var(--ink-muted); background:var(--bg); }
 
-  .modal-close {
-    width: 100%;
-    padding: 12px;
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--ink-soft);
-    margin-top: 8px;
-    cursor: pointer;
-  }
+.bed-grid {
+  display:grid;
+  gap:10px;
+  justify-content:center;
+}
+/* Beds shrunk ~30% — cap max width so they don't fill column */
+.bed-grid.cols-2 { grid-template-columns:repeat(2, 64px); }
+.bed-grid.cols-3 { grid-template-columns:repeat(3, 64px); }
+.bed-grid.cols-4 { grid-template-columns:repeat(4, 64px); }
 
-  .legend {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px 14px;
-    padding: 14px 16px;
-    background: var(--surface);
-    border-top: 1px solid var(--line);
-    margin-top: 24px;
-  }
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--ink-soft);
-  }
-  .legend-swatch {
-    width: 14px; height: 14px;
-    border-radius: 4px;
-    border: 1.5px solid;
-    flex-shrink: 0;
-  }
-  .legend-swatch.occupied { background: var(--occupied-bg); border-color: var(--occupied); }
-  .legend-swatch.pending  { background: var(--pending-dc-bg); border-color: var(--pending-dc); }
-  .legend-swatch.vacant   { background: var(--vacant-bg); border-color: var(--vacant); }
-  .legend-swatch.reserved { background: var(--reserved-bg); border-color: var(--reserved); }
+/* All beds are equal-sized squares — white card style */
+.bed {
+  aspect-ratio:1/1;
+  border-radius:10px;
+  border:2px solid var(--line);
+  cursor:pointer;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  font-weight:800;
+  transition:transform .1s ease;
+  position:relative;
+  background:var(--surface);
+  padding:2px;
+}
+.bed:active { transform:scale(.92); }
+.bed .bed-num {
+  font-family:var(--font-pixel);
+  font-size:14px;
+  font-weight:400;
+  line-height:1;
+  color:var(--ink);
+}
+.bed .bed-label {
+  font-family:var(--font-thai);
+  font-size:11px;
+  font-weight:700;
+  margin-top:5px;
+  line-height:1.1;
+  text-align:center;
+  padding:0 1px;
+}
+.bed.occupied { background:var(--occupied-bg); border-color:var(--occupied-bd); }
+.bed.occupied .bed-num,
+.bed.occupied .bed-label { color:var(--occupied); }
+.bed.pending { background:var(--pending-dc-bg); border-color:var(--pending-dc-bd); }
+.bed.pending .bed-num,
+.bed.pending .bed-label { color:var(--pending-dc); }
+.bed.vacant { background:var(--vacant-bg); border-color:var(--vacant-bd); }
+.bed.vacant .bed-num,
+.bed.vacant .bed-label { color:var(--vacant); }
+.bed.reserved { background:var(--reserved-bg); border-color:var(--reserved-bd); }
+.bed.reserved .bed-num,
+.bed.reserved .bed-label { color:var(--reserved); }
+.bed.pending::after {
+  content:'';
+  position:absolute; inset:-2px;
+  border-radius:10px;
+  border:2px solid var(--pending-dc);
+  animation:glow 1.5s ease-in-out infinite;
+  pointer-events:none;
+}
+@keyframes glow { 0%,100%{opacity:.4;} 50%{opacity:1;} }
 
-  .toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%) translateY(100px);
-    background: var(--ink);
-    color: white;
-    padding: 12px 20px;
-    border-radius: 30px;
-    font-size: 13px;
-    font-weight: 500;
-    box-shadow: var(--shadow-lg);
-    z-index: 200;
-    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    pointer-events: none;
-  }
-  .toast.show { transform: translateX(-50%) translateY(0); }
+/* FAB: pixel-style buttons, softer */
+.fab-stack { position:fixed; bottom:14px; right:14px; display:flex; flex-direction:column; gap:10px; z-index:80; align-items:center; }
+.fab {
+  width:60px; height:60px;
+  border:3px solid var(--ink);
+  border-radius:6px;
+  cursor:pointer;
+  box-shadow: 3px 3px 0 var(--ink);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  font-family:var(--font-pixel);
+  color:#fff;
+  position:relative;
+  transition:all .1s steps(2,end);
+  padding:0;
+  image-rendering:pixelated;
+}
+.fab:active {
+  transform:translate(2px,2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+.fab .fab-text { font-size:7px; margin-top:3px; letter-spacing:.05em; font-weight:400; }
 
-  .last-update {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    color: var(--ink-muted);
-    text-align: center;
-    padding: 12px;
-    letter-spacing: 0.04em;
-  }
+/* Doctor — softer blue */
+.fab.doctor { background:#3b82f6; }
+.fab.doctor::before {
+  content:'';
+  position:absolute; top:4px; left:4px;
+  width:9px; height:9px;
+  background:#93c5fd;
+}
 
-  /* Setup screen */
-  .setup-screen {
-    max-width: 480px;
-    margin: 40px auto;
-    padding: 28px 24px;
-    background: var(--surface);
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    box-shadow: var(--shadow-md);
-  }
-  .setup-screen h2 {
-    margin: 0 0 8px;
-    font-size: 20px;
-  }
-  .setup-screen p {
-    color: var(--ink-soft);
-    font-size: 14px;
-    margin: 0 0 20px;
-  }
-  .setup-screen label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    margin-bottom: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  .setup-screen input {
-    width: 100%;
-    padding: 12px 14px;
-    border: 1px solid var(--line-strong);
-    border-radius: 10px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    margin-bottom: 16px;
-    background: var(--bg);
-  }
-  .setup-screen input:focus {
-    outline: none;
-    border-color: var(--ink);
-    background: white;
-  }
-  .setup-btn {
-    width: 100%;
-    padding: 14px;
-    background: var(--ink);
-    color: white;
-    border: none;
-    border-radius: 10px;
-    font-family: inherit;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .setup-error {
-    background: var(--occupied-bg);
-    color: var(--occupied);
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    margin-bottom: 16px;
-    display: none;
-  }
-  .setup-error.show { display: block; }
-  .setup-help {
-    font-size: 12px;
-    color: var(--ink-muted);
-    line-height: 1.6;
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid var(--line);
-  }
-  .setup-help code {
-    background: var(--bg);
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 11px;
-  }
+/* Nurse — softer green */
+.fab.nurse { background:#10b981; }
+.fab.nurse::before {
+  content:'';
+  position:absolute; top:4px; left:4px;
+  width:9px; height:9px;
+  background:#6ee7b7;
+}
 
-  #app { display: none; }
-  #app.ready { display: block; }
+/* Report — gray */
+.fab.report { background:#64748b; width:48px; height:48px; }
+.fab.report::before {
+  content:'';
+  position:absolute; top:3px; left:3px;
+  width:7px; height:7px;
+  background:#cbd5e1;
+}
+
+/* Faded state */
+.fab.role-faded {
+  opacity:.28;
+  filter:saturate(.4);
+  transform:scale(.78);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+/* Active role — coin halo */
+.fab.role-active {
+  transform:scale(1.12);
+  box-shadow:
+    3px 3px 0 var(--ink),
+    -2px -2px 0 #FFD600,
+    2px -2px 0 #FFD600,
+    -2px 2px 0 #FFD600;
+  animation:fabBlink 1s steps(2,end) infinite;
+}
+@keyframes fabBlink {
+  0%, 100% { box-shadow: 3px 3px 0 var(--ink), -2px -2px 0 #FFD600, 2px -2px 0 #FFD600, -2px 2px 0 #FFD600; }
+  50%      { box-shadow: 3px 3px 0 var(--ink), -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff; }
+}
+
+.fab-badge { position:absolute; top:-6px; right:-6px; background:var(--occupied); color:white; font-family:var(--font-pixel); font-size:8px; font-weight:400; padding:3px 5px; border:2px solid var(--ink); line-height:1.2; border-radius:3px; }
+
+/* Modal */
+.modal-overlay { position:fixed; inset:0; background:rgba(13,27,42,.55); backdrop-filter:blur(4px); z-index:100; display:none; align-items:flex-end; justify-content:center; animation:fadeIn .18s ease; }
+.modal-overlay.active { display:flex; }
+@keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+@keyframes slideUp { from{transform:translateY(100%);} to{transform:translateY(0);} }
+.modal { background:var(--surface); border-radius:18px 18px 0 0; width:100%; max-width:480px; padding:14px 18px 22px; animation:slideUp .2s ease; max-height:88vh; overflow-y:auto; }
+.modal-handle { width:32px; height:4px; background:var(--line-strong); border-radius:2px; margin:0 auto 10px; }
+.modal-title { font-size:18px; font-weight:800; margin-bottom:3px; }
+.modal-sub { font-size:12px; color:var(--ink-muted); margin-bottom:14px; font-family:'JetBrains Mono',monospace; letter-spacing:.03em; }
+.status-now { background:var(--bg); border-radius:10px; padding:11px 14px; margin-bottom:12px; display:flex; align-items:center; gap:10px; }
+.status-dot { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+.status-dot.occupied { background:var(--occupied); }
+.status-dot.pending { background:var(--pending-dc); }
+.status-dot.vacant { background:var(--vacant); }
+.status-dot.reserved { background:var(--reserved); }
+.status-text { font-weight:700; font-size:15px; }
+
+.role-banner { display:flex; align-items:center; gap:6px; padding:8px 12px; border-radius:8px; font-size:13px; font-weight:800; margin-bottom:12px; letter-spacing:.03em; }
+.role-banner.doctor { background:#dbeafe; color:#1d4ed8; }
+.role-banner.nurse  { background:#d1fae5; color:#047857; }
+.role-need { background:var(--reserved-bg); color:#92400e; padding:13px 15px; border-radius:10px; font-size:13px; margin-bottom:12px; border:1px solid var(--reserved); font-weight:600; line-height:1.5; }
+
+.action-btn { width:100%; display:flex; align-items:center; justify-content:space-between; padding:13px 15px; margin-bottom:7px; border:1px solid var(--line-strong); border-radius:11px; background:var(--surface); color:var(--ink); font-family:inherit; font-size:14px; font-weight:700; cursor:pointer; text-align:left; }
+.action-btn:active { transform:scale(.98); }
+.action-btn .left { display:flex; flex-direction:column; gap:2px; }
+.action-btn .desc { font-size:11px; font-weight:500; color:var(--ink-muted); }
+.action-btn .arrow { color:var(--ink-muted); font-weight:800; font-size:16px; }
+.action-btn.btn-admit { background:var(--admit-q-bg); border-color:var(--admit-q); color:var(--admit-q); }
+.action-btn.btn-admit .desc { color:#1d4ed8; }
+.action-btn.btn-reserve { background:var(--reserved-bg); border-color:var(--reserved); color:#a16207; }
+.action-btn.btn-reserve .desc { color:#b45309; }
+.action-btn.btn-discharge-order { background:var(--pending-dc-bg); border-color:var(--pending-dc); color:var(--pending-dc); }
+.action-btn.btn-discharge-order .desc { color:#be185d; }
+.action-btn.btn-discharge-done { background:var(--vacant-bg); border-color:var(--vacant); color:var(--vacant); }
+.action-btn.btn-discharge-done .desc { color:#15803d; }
+.action-btn.btn-occupy { background:var(--occupied-bg); border-color:var(--occupied); color:var(--occupied); }
+.action-btn.btn-occupy .desc { color:#b91c1c; }
+.modal-close { width:100%; margin-top:6px; padding:10px; background:transparent; border:1px solid var(--line); border-radius:9px; color:var(--ink-soft); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+
+.source-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; margin-bottom:12px; }
+.source-grid.cols-3 { grid-template-columns:repeat(3,1fr); }
+.source-btn { padding:13px 6px; border:1.5px solid var(--line-strong); border-radius:10px; background:var(--surface); font-family:inherit; font-size:14px; font-weight:800; cursor:pointer; text-align:center; }
+.source-btn.selected { background:var(--ink); color:white; border-color:var(--ink); }
+.source-btn .src-sub { display:block; font-size:10px; font-weight:500; opacity:.6; margin-top:2px; font-family:'JetBrains Mono',monospace; }
+.form-label { font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; display:block; }
+.form-input { width:100%; padding:10px 11px; border:1px solid var(--line-strong); border-radius:9px; font-family:inherit; font-size:12px; margin-bottom:12px; }
+
+.queue-list { max-height:55vh; overflow-y:auto; margin-bottom:10px; }
+.queue-item { display:flex; align-items:center; justify-content:space-between; padding:9px 11px; background:var(--bg); border-radius:8px; margin-bottom:5px; font-size:12px; gap:8px; }
+.queue-item .qi-info { display:flex; flex-direction:column; gap:1px; min-width:0; flex:1 1 auto; }
+.queue-item .qi-source { font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:800; color:var(--ink); letter-spacing:.03em; }
+.queue-item .qi-note { font-size:11px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.queue-item .qi-time { font-size:9px; color:var(--ink-muted); font-family:'JetBrains Mono',monospace; }
+.queue-item button { padding:5px 10px; border-radius:6px; border:1px solid; background:var(--surface); font-family:inherit; font-size:11px; font-weight:800; cursor:pointer; flex-shrink:0; }
+.queue-item button.accept { color:var(--vacant); border-color:var(--vacant); }
+.queue-item button.cancel { color:var(--occupied); border-color:var(--occupied); }
+.queue-section-label { font-size:10px; color:var(--ink-muted); font-weight:800; text-transform:uppercase; letter-spacing:.05em; margin:8px 2px 4px; }
+.empty-msg { text-align:center; color:var(--ink-muted); padding:20px 0; font-size:13px; }
+
+.toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--ink); color:white; padding:9px 16px; border-radius:9px; font-size:13px; font-weight:600; box-shadow:var(--shadow-lg); opacity:0; transition:all .25s ease; z-index:150; pointer-events:none; max-width:90%; text-align:center; }
+.toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+.report-output { background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:11px 13px; margin:10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.6; white-space:pre-wrap; max-height:42vh; overflow-y:auto; }
+.copy-btn { width:100%; padding:11px; background:var(--vacant); color:white; border:none; border-radius:9px; font-family:inherit; font-size:13px; font-weight:800; cursor:pointer; margin-bottom:6px; }
+.shift-select { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin-bottom:10px; }
+.shift-select button { padding:9px 4px; border:1.5px solid var(--line-strong); border-radius:8px; background:var(--surface); font-family:inherit; font-size:11px; font-weight:800; cursor:pointer; }
+.shift-select button.selected { background:var(--ink); color:white; border-color:var(--ink); }
+.shift-select button .sh-time { display:block; font-size:9px; font-weight:500; opacity:.7; margin-top:2px; font-family:'JetBrains Mono',monospace; }
+
+@media print {
+  html, body { overflow:visible !important; height:auto !important; }
+  .topbar, .stats-strip, .tabs, .fab-stack, .modal-overlay, .toast { display:none !important; }
+  .map-area { overflow:visible; padding:16px; }
+  .ward-section { display:flex !important; page-break-after:always; }
+}
 </style>
 </head>
 <body>
 
-<!-- Setup screen (shown if no credentials) -->
+<!-- Setup -->
 <div class="setup-screen" id="setupScreen">
-  <h2>เชื่อมต่อ Supabase</h2>
-  <p>ใส่ URL และ anon key ของโปรเจกต์ Supabase ของคุณ — เก็บไว้ในเครื่องนี้เท่านั้น</p>
-  <div class="setup-error" id="setupError"></div>
-  <label for="supaUrl">SUPABASE URL</label>
-  <input type="text" id="supaUrl" placeholder="https://xxxxx.supabase.co" autocomplete="off" autocapitalize="off" autocorrect="off" />
-  <label for="supaKey">ANON KEY</label>
-  <input type="text" id="supaKey" placeholder="eyJ..." autocomplete="off" autocapitalize="off" autocorrect="off" />
-  <button class="setup-btn" id="setupBtn">เชื่อมต่อ</button>
-  <div class="setup-help">
-    หา URL/key ได้ที่ Supabase Dashboard → Project Settings → API<br>
-    ดูคู่มือ setup database ใน <code>SETUP.md</code> ที่แนบมาด้วย
+  <div class="setup-card">
+    <h2>เชื่อมต่อ Supabase</h2>
+    <p>ใส่ URL และ anon key ของโปรเจกต์</p>
+    <div class="setup-error" id="setupError"></div>
+    <label>SUPABASE URL</label>
+    <input type="text" id="supaUrl" placeholder="https://xxxxx.supabase.co" autocomplete="off" autocapitalize="off" autocorrect="off" />
+    <label>ANON KEY</label>
+    <input type="text" id="supaKey" placeholder="sb_publishable_..." autocomplete="off" autocapitalize="off" autocorrect="off" />
+    <button class="setup-btn" id="setupBtn">เชื่อมต่อ</button>
   </div>
 </div>
 
-<!-- Main app -->
+<!-- App -->
 <div id="app">
-  <header>
-    <div class="header-row">
-      <div class="title-block">
+  <div class="topbar">
+    <div class="topbar-row">
+      <div class="brand">
+        <span class="live-dot" id="liveDot"></span>
         <h1>Bed Status</h1>
-        <div class="sub"><span class="live-dot" id="liveDot"></span><span id="liveText">CONNECTING...</span></div>
       </div>
-      <div class="last-update" id="lastUpdate">—</div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="clock" id="liveClock">—</span>
+        <span class="shift-tag" id="shiftTag">—</span>
+      </div>
     </div>
-    <div class="tabs" id="wardTabs"></div>
-  </header>
-
-  <div class="stats">
-    <div class="stat occupied"><div class="num" id="statOccupied">0</div><div class="label">เตียงเต็ม</div></div>
-    <div class="stat vacant"><div class="num" id="statVacant">0</div><div class="label">ว่างจริง</div></div>
-    <div class="stat pending"><div class="num" id="statPending">0</div><div class="label">รอ D/C</div></div>
-    <div class="stat reserved"><div class="num" id="statReserved">0</div><div class="label">จองรอเข้า</div></div>
   </div>
 
-  <div id="wardContainer"></div>
+  <!-- Stats infographic strip - PER ACTIVE WARD -->
+  <div class="stats-strip">
+    <div class="stat-cell occ"><div class="num" id="statOcc">0</div><div class="lbl">เต็ม</div></div>
+    <div class="stat-cell vac"><div class="num" id="statVac">0</div><div class="lbl">ว่าง</div></div>
+    <div class="stat-cell dc"><div class="num" id="statDc">0</div><div class="lbl">D/C·ย้าย</div></div>
+    <div class="stat-cell res"><div class="num" id="statRes">0</div><div class="lbl">จอง</div></div>
+    <div class="stat-cell qad" onclick="openAdmitQueueList()">
+      <div class="num" id="statQad">0</div><div class="lbl">คิว Admit</div>
+    </div>
+  </div>
 
-  <div class="legend">
-    <div class="legend-item"><span class="legend-swatch occupied"></span>เตียงเต็ม</div>
-    <div class="legend-item"><span class="legend-swatch pending"></span>สั่ง D/C รอออก</div>
-    <div class="legend-item"><span class="legend-swatch vacant"></span>ว่างจริง</div>
-    <div class="legend-item"><span class="legend-swatch reserved"></span>จองรอเข้า</div>
+  <!-- Tabs -->
+  <div class="tabs" id="wardTabs"></div>
+
+  <!-- Map area -->
+  <div class="map-area" id="mapArea"></div>
+
+  <!-- FAB -->
+  <div class="fab-stack">
+    <button class="fab report" onclick="openReportModal()" title="รายงานเวร">
+      <!-- Pixel report icon -->
+      <svg width="22" height="22" viewBox="0 0 16 16" shape-rendering="crispEdges" fill="none">
+        <rect x="3" y="2" width="10" height="12" fill="#fff"/>
+        <rect x="3" y="2" width="10" height="2" fill="#fff"/>
+        <rect x="5" y="1" width="6" height="2" fill="#FFD600" stroke="#000" stroke-width="0.5"/>
+        <rect x="5" y="6" width="6" height="1" fill="#000"/>
+        <rect x="5" y="8" width="6" height="1" fill="#000"/>
+        <rect x="5" y="10" width="4" height="1" fill="#000"/>
+        <rect x="2" y="2" width="1" height="12" fill="#000"/>
+        <rect x="13" y="2" width="1" height="12" fill="#000"/>
+        <rect x="3" y="1" width="10" height="1" fill="#000"/>
+        <rect x="3" y="14" width="10" height="1" fill="#000"/>
+      </svg>
+    </button>
+    <button class="fab doctor" id="fabDoctor" onclick="toggleRole('doctor')">
+      <!-- Pixel stethoscope icon -->
+      <svg width="26" height="26" viewBox="0 0 16 16" shape-rendering="crispEdges">
+        <rect x="3" y="2" width="2" height="6" fill="#FFFFFF"/>
+        <rect x="11" y="2" width="2" height="6" fill="#FFFFFF"/>
+        <rect x="4" y="8" width="2" height="2" fill="#FFFFFF"/>
+        <rect x="10" y="8" width="2" height="2" fill="#FFFFFF"/>
+        <rect x="5" y="10" width="1" height="3" fill="#FFFFFF"/>
+        <rect x="10" y="10" width="1" height="3" fill="#FFFFFF"/>
+        <rect x="6" y="13" width="4" height="1" fill="#FFFFFF"/>
+        <rect x="7" y="11" width="2" height="2" fill="#FF1010"/>
+      </svg>
+      <span class="fab-text">DOCTOR</span>
+    </button>
+    <button class="fab nurse" id="fabNurse" onclick="toggleRole('nurse')">
+      <!-- Pixel cross icon (nurse) -->
+      <svg width="26" height="26" viewBox="0 0 16 16" shape-rendering="crispEdges">
+        <rect x="2" y="3" width="12" height="10" fill="#FFFFFF"/>
+        <rect x="6" y="5" width="4" height="6" fill="#FF1010"/>
+        <rect x="3" y="7" width="10" height="2" fill="#FF1010"/>
+        <rect x="2" y="3" width="12" height="1" fill="#000"/>
+        <rect x="2" y="12" width="12" height="1" fill="#000"/>
+        <rect x="1" y="3" width="1" height="10" fill="#000"/>
+        <rect x="14" y="3" width="1" height="10" fill="#000"/>
+      </svg>
+      <span class="fab-text">NURSE</span>
+    </button>
   </div>
 </div>
 
+<!-- Bed action modal -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <div class="modal-handle"></div>
-    <h3 class="modal-title" id="modalTitle">เตียง</h3>
+    <h3 class="modal-title" id="modalTitle">—</h3>
     <div class="modal-sub" id="modalSub">—</div>
-    <div class="status-now" id="modalStatus">
+    <div class="status-now">
       <div class="status-dot" id="modalStatusDot"></div>
       <div class="status-text" id="modalStatusText">—</div>
     </div>
+    <div id="modalRoleBanner"></div>
     <div id="modalActions"></div>
     <button class="modal-close" onclick="closeModal()">ปิด</button>
+  </div>
+</div>
+
+<!-- Doctor admit order modal -->
+<div class="modal-overlay" id="admitOrderOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">สั่ง Admit</h3>
+    <div class="modal-sub">DOCTOR ORDER · เข้าคิวรอพยาบาลรับ</div>
+    <label class="form-label">รับมาจาก</label>
+    <div class="source-grid cols-3" id="sourceGrid"></div>
+    <label class="form-label">เข้า Ward</label>
+    <div class="source-grid cols-3" id="targetWardGrid"></div>
+    <label class="form-label">หมายเหตุ (ถ้ามี)</label>
+    <input type="text" class="form-input" id="admitNote" placeholder="เช่น ชื่อ/อายุ/dx" />
+    <button class="action-btn btn-admit" onclick="submitAdmitOrder()" style="justify-content:center;">
+      <div style="text-align:center; width:100%;">
+        <div style="font-weight:800;">ส่งคำสั่ง Admit เข้าคิว</div>
+        <div class="desc" style="text-align:center; margin-top:2px;">พยาบาล ward จะหยิบคนไข้เข้าเตียง</div>
+      </div>
+    </button>
+    <button class="modal-close" onclick="closeAdmitOrderModal()">ยกเลิก</button>
+  </div>
+</div>
+
+<!-- Admit queue list modal -->
+<div class="modal-overlay" id="admitQueueOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">คิวรอ Admit</h3>
+    <div class="modal-sub" id="admitQueueSub">—</div>
+    <div class="queue-list" id="queueListContainer"></div>
+    <button class="modal-close" onclick="closeAdmitQueueModal()">ปิด</button>
+  </div>
+</div>
+
+<!-- Pick from queue (nurse) -->
+<div class="modal-overlay" id="pickQueueOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title" id="pickQueueTitle">หยิบคนไข้เข้าเตียง</h3>
+    <div class="modal-sub" id="pickQueueSub">—</div>
+    <div class="queue-list" id="pickQueueContainer"></div>
+    <button class="action-btn btn-occupy" onclick="walkInOccupy()" style="justify-content:center;">
+      <div style="text-align:center; width:100%;">
+        <div style="font-weight:800;">รับคนไข้โดยไม่มีคิว (walk-in)</div>
+        <div class="desc" style="text-align:center; margin-top:2px;">ใช้กรณีคนไข้มาเอง</div>
+      </div>
+    </button>
+    <button class="modal-close" onclick="closePickQueueModal()">ยกเลิก</button>
+  </div>
+</div>
+
+<!-- Report modal -->
+<div class="modal-overlay" id="reportOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">รายงานจำนวนเตียง</h3>
+    <div class="modal-sub" id="reportDateSub">—</div>
+    <label class="form-label">เลือกเวร</label>
+    <div class="shift-select" id="shiftSelect">
+      <button data-shift="morning" onclick="setReportShift('morning')">เช้า<span class="sh-time">08-16</span></button>
+      <button data-shift="afternoon" onclick="setReportShift('afternoon')">บ่าย<span class="sh-time">16-24</span></button>
+      <button data-shift="night" onclick="setReportShift('night')">ดึก<span class="sh-time">00-08</span></button>
+    </div>
+    <div class="report-output" id="reportOutput">—</div>
+    <button class="copy-btn" onclick="copyReport()">📋 Copy ข้อความ (สำหรับ LINE)</button>
+    <button class="action-btn" onclick="window.print()" style="justify-content:center;">
+      <div style="text-align:center; width:100%; font-weight:800;">🖨️ พิมพ์รายงาน</div>
+    </button>
+    <button class="modal-close" onclick="closeReportModal()">ปิด</button>
   </div>
 </div>
 
 <div class="toast" id="toast">บันทึกแล้ว</div>
 
 <script>
-/* =========================================================
-   Bed Management — Supabase Real-time
-   Schema:
-     table beds (
-       ward text,
-       bed_number int,
-       status text,         -- 'vacant' | 'occupied' | 'pending_dc' | 'reserved'
-       updated_at timestamptz default now(),
-       primary key (ward, bed_number)
-     )
-========================================================= */
-
+/* ═════════════ Configuration ═════════════ */
 const WARDS = [
-  { id: 'picu', name: 'PICU',  count: 8 },
-  { id: '12_2', name: '12/2', count: 28 },
-  { id: '9_3',  name: '9/3',  count: 15 }
+  {
+    id: 'picu', name: 'PICU', count: 8,
+    layout: [
+      { name: 'Negative Pressure', cls: 'negative', beds: [1,2], cols: 2 },
+      { name: 'ห้องรวม', cls: 'normal', beds: [3,4,5,6,7,8], cols: 3 }
+    ]
+  },
+  {
+    id: '12_2', name: '12/2', count: 36,
+    layout: [
+      { name: 'Lock 1', cls: 'normal', beds: [1,2,3,4,5,6,7,8], cols: 4 },
+      { name: 'Lock 2', cls: 'normal', beds: [9,10,11,12,13,14,15,16], cols: 4 },
+      { name: 'Lock 3', cls: 'normal', beds: [17,18,19,20,21,22,23,24], cols: 4 },
+      { name: 'Sterile (ปลอดเชื้อ)', cls: 'sterile', beds: [25,26,27,28,29,30,31,32], cols: 4 },
+      { name: 'Isolation', cls: 'isolation', beds: [33], cols: 4 },
+      { name: 'Canvas (ผ้าใบ)', cls: 'canvas', beds: [34,35,36], cols: 4 }
+    ]
+  },
+  {
+    id: '9_3', name: '9/3', count: 15,
+    layout: [
+      { name: 'เตียงทั่วไป', cls: 'normal', beds: [1,2,3,4,5,6,7,8,9,10,11], cols: 4 },
+      { name: 'ห้องรวม 4 เตียง', cls: 'shared', beds: [12,13,14,15], cols: 4 }
+    ]
+  }
 ];
 
-const STATUS_LABELS = {
-  vacant:     'ว่างจริง',
-  occupied:   'มีคนไข้',
-  pending_dc: 'สั่ง D/C รอคนไข้ออก',
-  reserved:   'จองรอเข้า'
+const STATUS_LABELS = { vacant:'ว่างจริง', occupied:'มีคนไข้', pending_dc:'สั่ง D/C รอคนไข้ออก', reserved:'จองรอเข้า' };
+const SOURCES = [
+  { id:'ER', name:'ER', desc:'ห้องฉุกเฉิน' },
+  { id:'OPD', name:'OPD', desc:'ผู้ป่วยนอก' },
+  { id:'REFER', name:'Refer', desc:'รับส่งต่อ' },
+  { id:'PICU', name:'PICU', desc:'จาก ICU' },
+  { id:'12_2', name:'12/2', desc:'ระหว่าง ward' },
+  { id:'9_3', name:'9/3', desc:'ระหว่าง ward' }
+];
+const SHIFTS = {
+  morning:   { name:'เช้า',  range:'08:00-16:00' },
+  afternoon: { name:'บ่าย', range:'16:00-24:00' },
+  night:     { name:'ดึก',  range:'00:00-08:00' }
 };
 
 const CRED_KEY = 'bed_supabase_creds';
-
-/* ═══════════════════════════════════════════════════════════════════
-   👇 ใส่ Supabase ANON KEY ของคุณตรงนี้ระหว่างเครื่องหมายคำพูด 👇
-   ═══════════════════════════════════════════════════════════════════
-   1. เปิดไฟล์นี้ด้วย Notepad / TextEdit
-   2. หาบรรทัด EMBEDDED_KEY = ''
-   3. วาง anon key ของคุณระหว่าง '' ให้กลายเป็น:
-      const EMBEDDED_KEY = 'eyJhbGc...your_key_here';
-   4. บันทึกไฟล์
-   ═══════════════════════════════════════════════════════════════════ */
 const EMBEDDED_URL = 'https://fpebfiwmramggiggpysv.supabase.co';
 const EMBEDDED_KEY = 'sb_publishable_RlcGZ2RC6pbnj-5-5vq_kA_Z_85PP4q';
 
+/* ═════════════ State ═════════════ */
 let db = null;
 let state = freshState();
+let admitQueue = [];
 let activeWard = WARDS[0].id;
 let currentBed = null;
+let currentRole = null;
+let pendingAdmitSource = null;
+let pendingAdmitWard = null;
+let reportShift = null;
 
-/* ---------- Setup screen ---------- */
-function showSetup(errorMsg = null) {
-  document.getElementById('setupScreen').style.display = 'block';
+function freshState() {
+  const s = {};
+  WARDS.forEach(w => { s[w.id] = Array.from({length:w.count}, () => 'vacant'); });
+  return s;
+}
+
+/* ═════════════ Setup / Supabase ═════════════ */
+function showSetup(msg) {
+  document.getElementById('setupScreen').classList.add('show');
   document.getElementById('app').classList.remove('ready');
-  if (errorMsg) {
+  if (msg) {
     const e = document.getElementById('setupError');
-    e.textContent = errorMsg;
+    e.textContent = msg;
     e.classList.add('show');
   }
 }
 function hideSetup() {
-  document.getElementById('setupScreen').style.display = 'none';
+  document.getElementById('setupScreen').classList.remove('show');
   document.getElementById('app').classList.add('ready');
 }
 
 document.getElementById('setupBtn').onclick = async () => {
   const url = document.getElementById('supaUrl').value.trim();
   const key = document.getElementById('supaKey').value.trim();
-  if (!url || !key) {
-    return showSetup('กรุณาใส่ URL และ Key ทั้งสองช่อง');
-  }
-  if (!url.startsWith('https://') || !url.includes('.supabase.co')) {
-    return showSetup('URL ต้องเป็นรูปแบบ https://xxx.supabase.co');
-  }
+  if (!url || !key) return showSetup('กรุณาใส่ URL และ Key ทั้งสองช่อง');
+  if (!url.startsWith('https://') || !url.includes('.supabase.co')) return showSetup('URL ต้องเป็น https://xxx.supabase.co');
   localStorage.setItem(CRED_KEY, JSON.stringify({ url, key }));
   await initSupabase(url, key);
 };
 
-/* ---------- Supabase init ---------- */
 async function initSupabase(url, key) {
   try {
     db = window.supabase.createClient(url, key);
-    // Test connection by reading
-    const { data, error } = await db.from('beds').select('*').limit(1);
-    if (error) {
-      showSetup('เชื่อมต่อไม่สำเร็จ: ' + error.message);
-      return;
-    }
+    const { error } = await db.from('beds').select('*').limit(1);
+    if (error) { showSetup('เชื่อมต่อไม่สำเร็จ: ' + error.message); return; }
     hideSetup();
     await ensureBedsExist();
     await fetchAll();
+    await fetchAdmitQueue();
     subscribeRealtime();
     setLive(true);
   } catch (e) {
@@ -641,100 +770,113 @@ async function initSupabase(url, key) {
   }
 }
 
-/* If table is empty, seed all bed rows once */
 async function ensureBedsExist() {
-  const { count, error } = await db
-    .from('beds')
-    .select('*', { count: 'exact', head: true });
+  const { data, error } = await db.from('beds').select('ward, bed_number');
   if (error) throw error;
-  if (count === 0) {
-    const rows = [];
-    WARDS.forEach(w => {
-      for (let i = 1; i <= w.count; i++) {
-        rows.push({ ward: w.id, bed_number: i, status: 'vacant' });
-      }
-    });
-    const { error: insErr } = await db.from('beds').insert(rows);
-    if (insErr) throw insErr;
-  }
-}
-
-/* ---------- State ---------- */
-function freshState() {
-  const s = {};
-  WARDS.forEach(w => {
-    s[w.id] = Array.from({ length: w.count }, () => 'vacant');
+  const existing = new Map();
+  data.forEach(r => {
+    if (!existing.has(r.ward)) existing.set(r.ward, new Set());
+    existing.get(r.ward).add(r.bed_number);
   });
-  return s;
+  const toInsert = [];
+  WARDS.forEach(w => {
+    const set = existing.get(w.id) || new Set();
+    for (let i=1; i<=w.count; i++) {
+      if (!set.has(i)) toInsert.push({ ward:w.id, bed_number:i, status:'vacant' });
+    }
+  });
+  if (toInsert.length > 0) {
+    const { error: e2 } = await db.from('beds').insert(toInsert);
+    if (e2) throw e2;
+  }
 }
 
 async function fetchAll() {
   const { data, error } = await db.from('beds').select('*');
-  if (error) {
-    showToast('โหลดข้อมูลไม่สำเร็จ');
-    return;
-  }
+  if (error) { showToast('โหลดข้อมูลไม่สำเร็จ'); return; }
   const fresh = freshState();
-  data.forEach(row => {
-    if (fresh[row.ward] && row.bed_number >= 1 && row.bed_number <= fresh[row.ward].length) {
-      fresh[row.ward][row.bed_number - 1] = row.status;
+  data.forEach(r => {
+    if (fresh[r.ward] && r.bed_number >= 1 && r.bed_number <= fresh[r.ward].length) {
+      fresh[r.ward][r.bed_number - 1] = r.status;
     }
   });
   state = fresh;
   buildTabs();
-  buildWardSections();
-  renderWards();
-  setLastUpdate();
+  buildMapArea();
+  renderAll();
 }
 
-/* ---------- Realtime subscription ---------- */
+async function fetchAdmitQueue() {
+  const { data, error } = await db.from('admit_queue').select('*').order('created_at', { ascending:true });
+  if (error) {
+    if (error.message.includes('admit_queue')) {
+      console.warn('admit_queue table not found — run the SQL setup');
+      admitQueue = [];
+    } else {
+      console.error(error);
+    }
+    renderStats();
+    return;
+  }
+  admitQueue = data || [];
+  renderStats();
+}
+
 function subscribeRealtime() {
-  db
-    .channel('beds-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'beds' },
-      (payload) => {
-        const row = payload.new || payload.old;
-        if (!row) return;
-        if (state[row.ward] && row.bed_number >= 1 && row.bed_number <= state[row.ward].length) {
-          if (payload.new) {
-            state[row.ward][row.bed_number - 1] = payload.new.status;
-          }
-          renderWards();
-          setLastUpdate();
-        }
+  db.channel('beds-ch')
+    .on('postgres_changes', { event:'*', schema:'public', table:'beds' }, (p) => {
+      const row = p.new || p.old;
+      if (!row) return;
+      if (state[row.ward] && row.bed_number >= 1 && row.bed_number <= state[row.ward].length) {
+        if (p.new) state[row.ward][row.bed_number - 1] = p.new.status;
+        renderAll();
       }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') setLive(true);
-      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        setLive(false);
-      }
+    })
+    .subscribe((s) => {
+      if (s === 'SUBSCRIBED') setLive(true);
+      else if (['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(s)) setLive(false);
     });
+  db.channel('queue-ch')
+    .on('postgres_changes', { event:'*', schema:'public', table:'admit_queue' }, async () => {
+      await fetchAdmitQueue();
+    })
+    .subscribe();
 }
 
 function setLive(isLive) {
   const dot = document.getElementById('liveDot');
-  const txt = document.getElementById('liveText');
-  if (isLive) {
-    dot.classList.remove('disconnected');
-    txt.textContent = 'LIVE · ALL WARDS';
-  } else {
-    dot.classList.add('disconnected');
-    txt.textContent = 'OFFLINE';
-  }
+  if (isLive) dot.classList.remove('disconnected');
+  else dot.classList.add('disconnected');
 }
 
-function setLastUpdate() {
-  const t = new Date();
-  const hh = String(t.getHours()).padStart(2,'0');
-  const mm = String(t.getMinutes()).padStart(2,'0');
-  const ss = String(t.getSeconds()).padStart(2,'0');
-  document.getElementById('lastUpdate').textContent = `${hh}:${mm}:${ss}`;
+/* ═════════════ Clock + shift ═════════════ */
+function getCurrentShift(d = new Date()) {
+  const h = d.getHours();
+  if (h >= 8 && h < 16) return 'morning';
+  if (h >= 16) return 'afternoon';
+  return 'night';
 }
+function fmtThaiDate(d) {
+  const m = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+  return `${d.getDate()} ${m[d.getMonth()]} ${d.getFullYear()+543}`;
+}
+function fmtTime(d, withSec = true) {
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
+  if (!withSec) return `${hh}:${mm}`;
+  return `${hh}:${mm}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+function tickClock() {
+  const now = new Date();
+  document.getElementById('liveClock').textContent = fmtTime(now, false);
+  const shift = getCurrentShift(now);
+  const t = document.getElementById('shiftTag');
+  t.textContent = `${SHIFTS[shift].name} ${SHIFTS[shift].range}`;
+  t.className = 'shift-tag ' + shift;
+}
+setInterval(tickClock, 1000); tickClock();
 
-/* ---------- UI build ---------- */
+/* ═════════════ UI build ═════════════ */
 function buildTabs() {
   const tabs = document.getElementById('wardTabs');
   tabs.innerHTML = '';
@@ -742,123 +884,179 @@ function buildTabs() {
     const btn = document.createElement('button');
     btn.className = 'tab' + (w.id === activeWard ? ' active' : '');
     btn.innerHTML = `${w.name} <span class="count">${w.count}</span>`;
-    btn.onclick = () => {
-      activeWard = w.id;
-      buildTabs();
-      renderWards();
-    };
+    btn.onclick = () => { activeWard = w.id; buildTabs(); renderAll(); };
     tabs.appendChild(btn);
   });
 }
 
-function buildWardSections() {
-  const c = document.getElementById('wardContainer');
-  c.innerHTML = '';
+function buildMapArea() {
+  const map = document.getElementById('mapArea');
+  map.innerHTML = '';
   WARDS.forEach(w => {
-    const section = document.createElement('div');
-    section.className = 'ward-section';
-    section.dataset.ward = w.id;
-    section.innerHTML = `
-      <div class="section-head">
-        <h2>${w.name}</h2>
-        <div class="meta" id="meta_${w.id}">—</div>
-      </div>
-      <div class="bed-grid" id="grid_${w.id}"></div>
-    `;
-    c.appendChild(section);
+    const sec = document.createElement('div');
+    sec.className = 'ward-section';
+    sec.dataset.ward = w.id;
+    let html = `<div class="ward-header">
+      <span class="ward-title">${w.name}</span>
+      <span class="ward-summary" id="summary_${w.id}">—</span>
+    </div>`;
+    w.layout.forEach((g, i) => {
+      html += `<div class="room-group ${g.cls}">
+        <span class="group-label">${g.name}</span>
+        <div class="bed-grid cols-${g.cols}" id="grid_${w.id}_${i}"></div>
+      </div>`;
+    });
+    sec.innerHTML = html;
+    map.appendChild(sec);
   });
 }
 
-function renderWards() {
+function renderAll() {
   document.querySelectorAll('.ward-section').forEach(s => {
     s.classList.toggle('active', s.dataset.ward === activeWard);
   });
   WARDS.forEach(w => {
-    const grid = document.getElementById(`grid_${w.id}`);
-    if (!grid) return;
-    grid.innerHTML = '';
-    state[w.id].forEach((status, idx) => {
-      const bed = document.createElement('div');
-      bed.className = 'bed ' + statusClass(status);
-      bed.innerHTML = `${idx + 1}<span class="bed-label">${shortLabel(status)}</span>`;
-      bed.onclick = () => openModal(w.id, idx);
-      grid.appendChild(bed);
+    w.layout.forEach((g, i) => {
+      const grid = document.getElementById(`grid_${w.id}_${i}`);
+      if (!grid) return;
+      grid.innerHTML = '';
+      g.beds.forEach(bn => {
+        const idx = bn - 1;
+        const status = state[w.id][idx] || 'vacant';
+        const bed = document.createElement('div');
+        bed.className = 'bed ' + statusClass(status);
+        bed.innerHTML = `<span class="bed-num">${bn}</span><span class="bed-label">${shortLabel(status)}</span>`;
+        bed.onclick = () => openModal(w.id, idx);
+        grid.appendChild(bed);
+      });
     });
-    const counts = countStatuses(state[w.id]);
-    document.getElementById(`meta_${w.id}`).textContent =
-      `${counts.occupied + counts.pending_dc}/${w.count} ใช้งาน · ว่าง ${counts.vacant}`;
+    // Update ward header summary
+    const c = countStatuses(state[w.id] || []);
+    const used = c.occupied + c.pending_dc;
+    const summary = document.getElementById(`summary_${w.id}`);
+    if (summary) summary.textContent = `${used}/${w.count} ใช้งาน · ว่าง ${c.vacant}`;
   });
   renderStats();
 }
 
 function statusClass(s) {
-  return { vacant:'vacant', occupied:'occupied', pending_dc:'pending', reserved:'reserved' }[s];
+  return { vacant:'vacant', occupied:'occupied', pending_dc:'pending', reserved:'reserved' }[s] || 'vacant';
 }
 function shortLabel(s) {
-  return { vacant:'ว่าง', occupied:'เต็ม', pending_dc:'D/C', reserved:'จอง' }[s];
+  return { vacant:'ว่าง', occupied:'เต็ม', pending_dc:'D/C·ย้าย', reserved:'จอง' }[s] || '—';
 }
 function countStatuses(arr) {
   const c = { vacant:0, occupied:0, pending_dc:0, reserved:0 };
-  arr.forEach(s => c[s]++);
+  arr.forEach(s => { c[s] = (c[s]||0) + 1; });
   return c;
 }
 function renderStats() {
-  const total = { vacant:0, occupied:0, pending_dc:0, reserved:0 };
-  WARDS.forEach(w => {
-    const c = countStatuses(state[w.id]);
-    Object.keys(total).forEach(k => total[k] += c[k]);
-  });
-  document.getElementById('statOccupied').textContent = total.occupied;
-  document.getElementById('statVacant').textContent   = total.vacant;
-  document.getElementById('statPending').textContent  = total.pending_dc;
-  document.getElementById('statReserved').textContent = total.reserved;
+  // Show stats for ACTIVE ward only
+  const ward = WARDS.find(w => w.id === activeWard);
+  const c = countStatuses(state[activeWard] || []);
+  const wardQ = admitQueue.filter(q => q.ward === activeWard).length;
+  document.getElementById('statOcc').textContent = c.occupied;
+  document.getElementById('statVac').textContent = c.vacant;
+  document.getElementById('statDc').textContent  = c.pending_dc;
+  document.getElementById('statRes').textContent = c.reserved;
+  document.getElementById('statQad').textContent = wardQ;
 }
 
-/* ---------- Modal ---------- */
+/* ═════════════ Role toggle (FAB) ═════════════ */
+function toggleRole(role) {
+  if (currentRole === role) {
+    currentRole = null;
+    showToast('ออกจากบทบาทแล้ว');
+  } else {
+    currentRole = role;
+    showToast(role === 'doctor' ? '🩺 เข้าใช้งานในบทบาทแพทย์' : '💉 เข้าใช้งานในบทบาทพยาบาล');
+  }
+  updateRoleFabs();
+}
+function updateRoleFabs() {
+  const d = document.getElementById('fabDoctor');
+  const n = document.getElementById('fabNurse');
+  // Reset
+  d.classList.remove('role-active','role-faded');
+  n.classList.remove('role-active','role-faded');
+  if (currentRole === 'doctor') {
+    d.classList.add('role-active');
+    n.classList.add('role-faded');
+  } else if (currentRole === 'nurse') {
+    n.classList.add('role-active');
+    d.classList.add('role-faded');
+  }
+  // No role = both at default appearance
+}
+
+/* ═════════════ Bed modal ═════════════ */
 function openModal(wardId, idx) {
-  currentBed = { ward: wardId, idx };
+  currentBed = { ward:wardId, idx };
   const ward = WARDS.find(w => w.id === wardId);
   const status = state[wardId][idx];
 
   document.getElementById('modalTitle').textContent = `${ward.name} — เตียง ${idx + 1}`;
   document.getElementById('modalSub').textContent = `BED ${ward.name.toUpperCase()}-${String(idx+1).padStart(2,'0')}`;
-
   document.getElementById('modalStatusDot').className = 'status-dot ' + statusClass(status);
   document.getElementById('modalStatusText').textContent = STATUS_LABELS[status];
 
+  const banner = document.getElementById('modalRoleBanner');
   const actions = document.getElementById('modalActions');
+  banner.innerHTML = '';
   actions.innerHTML = '';
 
-  if (status === 'vacant') {
-    addAction(actions, 'btn-admit', 'รับคนไข้ Admit', 'หมอ — เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
-    addAction(actions, 'btn-reserve', 'จองเตียง (รอเข้า)', 'พยาบาล/หมอ — รอคนไข้ใหม่', () => setStatus('reserved'));
-  } else if (status === 'reserved') {
-    addAction(actions, 'btn-admit', 'คนไข้เข้าแล้ว', 'เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
-    addAction(actions, 'btn-cancel-reserve', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
-  } else if (status === 'occupied') {
-    addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'หมอ — รอคนไข้ออกจริง', () => setStatus('pending_dc'));
-  } else if (status === 'pending_dc') {
-    addAction(actions, 'btn-discharge-done', 'คนไข้ออกแล้ว ✓', 'พยาบาล — เคลียร์เตียง', () => setStatus('vacant'));
-    addAction(actions, 'btn-secondary', 'ยกเลิก D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+  if (!currentRole) {
+    banner.innerHTML = `<div class="role-need">⚠️ ต้องเลือกบทบาท (แพทย์/พยาบาล) ที่ปุ่มมุมล่างขวาก่อน จึงจะดำเนินการเตียงนี้ได้</div>`;
+    document.getElementById('modalOverlay').classList.add('active');
+    return;
   }
 
+  banner.innerHTML = `<div class="role-banner ${currentRole}">${currentRole === 'doctor' ? '🩺 บทบาท: แพทย์' : '💉 บทบาท: พยาบาล'}</div>`;
+
+  if (currentRole === 'doctor') {
+    if (status === 'occupied') {
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'พยาบาลจะเคลียร์เตียงต่อ', () => setStatus('pending_dc'));
+    } else if (status === 'pending_dc') {
+      addAction(actions, 'btn-occupy', 'ยกเลิกคำสั่ง D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+    } else {
+      const note = document.createElement('div');
+      note.style.cssText = 'background:var(--bg); padding:13px; border-radius:9px; font-size:12px; color:var(--ink-soft); text-align:center; line-height:1.5;';
+      note.innerHTML = 'แพทย์ใช้ปุ่ม "+ Admit" ที่คิว ด้านล่างเพื่อสั่ง admit ใหม่<br>เตียงว่าง/จอง พยาบาลเป็นคนจัดการ';
+      actions.appendChild(note);
+      addAction(actions, 'btn-admit', '+ สั่ง Admit ใหม่', `ส่งคำสั่งเข้าคิว ${ward.name}`, () => {
+        closeModal();
+        openAdmitOrderModal(ward.id);
+      });
+    }
+  } else {
+    // Nurse
+    if (status === 'vacant') {
+      const wardQ = admitQueue.filter(q => q.ward === wardId).length;
+      addAction(actions, 'btn-admit', `หยิบจากคิว Admit (${wardQ})`, `เลือกคนไข้รอ admit`, openPickQueueForBed);
+      addAction(actions, 'btn-reserve', 'จองเตียง (รอเข้า)', 'เตียงนี้กันไว้รอคนไข้', () => setStatus('reserved'));
+      addAction(actions, 'btn-occupy', 'รับคนไข้ walk-in', 'เปลี่ยนเป็นเตียงเต็มทันที', () => setStatus('occupied'));
+    } else if (status === 'reserved') {
+      const wardQ = admitQueue.filter(q => q.ward === wardId).length;
+      addAction(actions, 'btn-admit', `หยิบจากคิว Admit (${wardQ})`, `เลือกคนไข้รอ admit`, openPickQueueForBed);
+      addAction(actions, 'btn-occupy', 'รับคนไข้เข้าเตียงทันที', 'เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
+      addAction(actions, 'btn-discharge-done', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
+    } else if (status === 'occupied') {
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C (ฉุกเฉิน)', 'ปกติแพทย์เป็นคนสั่ง', () => setStatus('pending_dc'));
+    } else if (status === 'pending_dc') {
+      addAction(actions, 'btn-discharge-done', 'คนไข้ออกแล้ว ✓', 'เคลียร์เตียง → ว่าง', () => setStatus('vacant'));
+      addAction(actions, 'btn-occupy', 'ยกเลิก D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+    }
+  }
   document.getElementById('modalOverlay').classList.add('active');
 }
 
-function addAction(container, cls, label, desc, handler) {
+function addAction(c, cls, label, desc, handler) {
   const btn = document.createElement('button');
   btn.className = 'action-btn ' + cls;
-  btn.innerHTML = `
-    <div class="left">
-      <div>${label}</div>
-      <div class="desc">${desc}</div>
-    </div>
-    <div class="arrow">→</div>
-  `;
+  btn.innerHTML = `<div class="left"><div>${label}</div><div class="desc">${desc}</div></div><div class="arrow">→</div>`;
   btn.onclick = handler;
-  container.appendChild(btn);
+  c.appendChild(btn);
 }
-
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
   currentBed = null;
@@ -867,26 +1065,261 @@ function closeModal() {
 async function setStatus(newStatus) {
   if (!currentBed) return;
   const { ward, idx } = currentBed;
-  // Optimistic local update
   state[ward][idx] = newStatus;
-  renderWards();
+  renderAll();
   closeModal();
-
-  const { error } = await db
-    .from('beds')
-    .update({ status: newStatus, updated_at: new Date().toISOString() })
-    .eq('ward', ward)
-    .eq('bed_number', idx + 1);
-
+  const { error } = await db.from('beds').update({ status:newStatus, updated_at:new Date().toISOString() }).eq('ward', ward).eq('bed_number', idx + 1);
   if (error) {
     showToast('บันทึกไม่สำเร็จ: ' + error.message);
-    // Re-fetch to recover
     await fetchAll();
   } else {
-    showToast(`อัพเดทแล้ว → ${STATUS_LABELS[newStatus]}`);
+    showToast(`อัพเดท → ${STATUS_LABELS[newStatus]}`);
   }
 }
 
+/* ═════════════ Admit order (doctor) ═════════════ */
+function openAdmitOrderModal(prefillWard) {
+  pendingAdmitSource = null;
+  pendingAdmitWard = prefillWard || null;
+  document.getElementById('admitNote').value = '';
+
+  const sg = document.getElementById('sourceGrid');
+  sg.innerHTML = '';
+  SOURCES.forEach(s => {
+    const btn = document.createElement('button');
+    btn.className = 'source-btn';
+    btn.dataset.source = s.id;
+    btn.innerHTML = `${s.name}<span class="src-sub">${s.desc}</span>`;
+    btn.onclick = () => {
+      pendingAdmitSource = s.id;
+      sg.querySelectorAll('.source-btn').forEach(b => b.classList.toggle('selected', b.dataset.source === s.id));
+    };
+    sg.appendChild(btn);
+  });
+
+  const wg = document.getElementById('targetWardGrid');
+  wg.innerHTML = '';
+  WARDS.forEach(w => {
+    const btn = document.createElement('button');
+    btn.className = 'source-btn' + (w.id === pendingAdmitWard ? ' selected' : '');
+    btn.dataset.ward = w.id;
+    btn.innerHTML = `${w.name}<span class="src-sub">${w.count} เตียง</span>`;
+    btn.onclick = () => {
+      pendingAdmitWard = w.id;
+      wg.querySelectorAll('.source-btn').forEach(b => b.classList.toggle('selected', b.dataset.ward === w.id));
+    };
+    wg.appendChild(btn);
+  });
+
+  document.getElementById('admitOrderOverlay').classList.add('active');
+}
+function closeAdmitOrderModal() {
+  document.getElementById('admitOrderOverlay').classList.remove('active');
+}
+
+async function submitAdmitOrder() {
+  if (!pendingAdmitSource) return showToast('กรุณาเลือกที่มาคนไข้');
+  if (!pendingAdmitWard) return showToast('กรุณาเลือก ward ปลายทาง');
+  const note = document.getElementById('admitNote').value.trim();
+  const row = { ward:pendingAdmitWard, source:pendingAdmitSource, note:note||null, created_by:'doctor' };
+  const { error } = await db.from('admit_queue').insert(row);
+  if (error) {
+    showToast('ส่งคำสั่งไม่สำเร็จ: ' + error.message);
+    return;
+  }
+  closeAdmitOrderModal();
+  showToast('✓ ส่งคำสั่ง Admit เข้าคิวแล้ว');
+  await fetchAdmitQueue();
+}
+
+/* ═════════════ Admit queue list ═════════════ */
+function openAdmitQueueList() {
+  const total = admitQueue.length;
+  const byWard = {};
+  admitQueue.forEach(q => byWard[q.ward] = (byWard[q.ward] || 0) + 1);
+  const wardSummary = WARDS.map(w => `${w.name}: ${byWard[w.id] || 0}`).join(' · ');
+  document.getElementById('admitQueueSub').textContent = total > 0 ? wardSummary : 'ยังไม่มีคิว';
+  renderQueueListContainer();
+  document.getElementById('admitQueueOverlay').classList.add('active');
+}
+function closeAdmitQueueModal() {
+  document.getElementById('admitQueueOverlay').classList.remove('active');
+}
+function renderQueueListContainer() {
+  const c = document.getElementById('queueListContainer');
+  c.innerHTML = '';
+  if (admitQueue.length === 0) {
+    c.innerHTML = '<div class="empty-msg">ไม่มีคิวรอ admit</div>';
+    return;
+  }
+  admitQueue.forEach(q => {
+    const ward = WARDS.find(w => w.id === q.ward);
+    const t = new Date(q.created_at);
+    const item = document.createElement('div');
+    item.className = 'queue-item';
+    item.innerHTML = `
+      <div class="qi-info">
+        <span class="qi-source">${q.source} → ${ward ? ward.name : q.ward}</span>
+        ${q.note ? `<span class="qi-note">${escapeHtml(q.note)}</span>` : ''}
+        <span class="qi-time">${fmtTime(t,false)} · ${fmtThaiDate(t)}</span>
+      </div>
+      <button class="cancel" data-id="${q.id}">ยกเลิก</button>
+    `;
+    item.querySelector('button').onclick = () => cancelQueueItem(q.id);
+    c.appendChild(item);
+  });
+}
+async function cancelQueueItem(id) {
+  if (!confirm('ยกเลิกคำสั่ง admit นี้?')) return;
+  const { error } = await db.from('admit_queue').delete().eq('id', id);
+  if (error) { showToast('ยกเลิกไม่สำเร็จ'); return; }
+  await fetchAdmitQueue();
+  renderQueueListContainer();
+  showToast('ยกเลิกคำสั่งแล้ว');
+}
+
+/* ═════════════ Pick from queue (nurse) ═════════════ */
+function openPickQueueForBed() {
+  if (!currentBed) return;
+  const ward = WARDS.find(w => w.id === currentBed.ward);
+  document.getElementById('pickQueueTitle').textContent = `${ward.name} เตียง ${currentBed.idx + 1}`;
+  document.getElementById('pickQueueSub').textContent = 'เลือกคนไข้ในคิว → รับเข้าเตียง';
+  const c = document.getElementById('pickQueueContainer');
+  c.innerHTML = '';
+
+  const wardQueue = admitQueue.filter(q => q.ward === currentBed.ward);
+  const otherQueue = admitQueue.filter(q => q.ward !== currentBed.ward);
+
+  if (wardQueue.length === 0 && otherQueue.length === 0) {
+    c.innerHTML = '<div class="empty-msg">ไม่มีคิวรอ admit</div>';
+  } else {
+    if (wardQueue.length > 0) {
+      const h = document.createElement('div');
+      h.className = 'queue-section-label';
+      h.textContent = `สำหรับ ${ward.name}`;
+      c.appendChild(h);
+      wardQueue.forEach(q => c.appendChild(makeQueuePickItem(q)));
+    }
+    if (otherQueue.length > 0) {
+      const h = document.createElement('div');
+      h.className = 'queue-section-label';
+      h.textContent = 'ward อื่น';
+      c.appendChild(h);
+      otherQueue.forEach(q => c.appendChild(makeQueuePickItem(q)));
+    }
+  }
+  closeModal();
+  document.getElementById('pickQueueOverlay').classList.add('active');
+}
+function makeQueuePickItem(q) {
+  const wardName = (WARDS.find(w => w.id === q.ward) || {}).name || q.ward;
+  const t = new Date(q.created_at);
+  const item = document.createElement('div');
+  item.className = 'queue-item';
+  item.innerHTML = `
+    <div class="qi-info">
+      <span class="qi-source">${q.source} → ${wardName}</span>
+      ${q.note ? `<span class="qi-note">${escapeHtml(q.note)}</span>` : ''}
+      <span class="qi-time">${fmtTime(t,false)}</span>
+    </div>
+    <button class="accept">รับเข้า</button>
+  `;
+  item.querySelector('button').onclick = () => acceptQueueItem(q);
+  return item;
+}
+async function acceptQueueItem(q) {
+  if (!currentBed) return;
+  const { error: e1 } = await db.from('beds').update({ status:'occupied', updated_at:new Date().toISOString() }).eq('ward', currentBed.ward).eq('bed_number', currentBed.idx + 1);
+  if (e1) { showToast('ไม่สำเร็จ: ' + e1.message); return; }
+  await db.from('admit_queue').delete().eq('id', q.id);
+  state[currentBed.ward][currentBed.idx] = 'occupied';
+  renderAll();
+  closePickQueueModal();
+  await fetchAdmitQueue();
+  showToast(`รับ ${q.source} เข้าเตียงแล้ว`);
+}
+async function walkInOccupy() {
+  if (!currentBed) return;
+  const { error } = await db.from('beds').update({ status:'occupied', updated_at:new Date().toISOString() }).eq('ward', currentBed.ward).eq('bed_number', currentBed.idx + 1);
+  if (error) { showToast('ไม่สำเร็จ'); return; }
+  state[currentBed.ward][currentBed.idx] = 'occupied';
+  renderAll();
+  closePickQueueModal();
+  showToast('รับเข้าเตียงแล้ว (walk-in)');
+}
+function closePickQueueModal() {
+  document.getElementById('pickQueueOverlay').classList.remove('active');
+  currentBed = null;
+}
+
+/* ═════════════ Report ═════════════ */
+function openReportModal() {
+  reportShift = getCurrentShift();
+  document.getElementById('reportDateSub').textContent = fmtThaiDate(new Date());
+  document.querySelectorAll('#shiftSelect button').forEach(b => b.classList.toggle('selected', b.dataset.shift === reportShift));
+  buildReport();
+  document.getElementById('reportOverlay').classList.add('active');
+}
+function closeReportModal() { document.getElementById('reportOverlay').classList.remove('active'); }
+function setReportShift(s) {
+  reportShift = s;
+  document.querySelectorAll('#shiftSelect button').forEach(b => b.classList.toggle('selected', b.dataset.shift === s));
+  buildReport();
+}
+function buildReport() {
+  const now = new Date();
+  const sh = SHIFTS[reportShift];
+  let txt = '';
+  txt += `📊 รายงานจำนวนเตียง · ${fmtThaiDate(now)}\n`;
+  txt += `เวร${sh.name} (${sh.range})\n`;
+  txt += `ณ เวลา ${fmtTime(now)}\n`;
+  txt += `${'─'.repeat(28)}\n\n`;
+  let gT = 0, gO = 0, gV = 0, gD = 0, gR = 0;
+  WARDS.forEach(w => {
+    const c = countStatuses(state[w.id]);
+    const wQ = admitQueue.filter(q => q.ward === w.id);
+    const used = c.occupied + c.pending_dc;
+    txt += `🏥 ${w.name} (${w.count} เตียง)\n`;
+    txt += `   • เต็ม: ${c.occupied}\n`;
+    txt += `   • รอ D/C: ${c.pending_dc}\n`;
+    txt += `   • ว่าง: ${c.vacant}\n`;
+    if (c.reserved > 0) txt += `   • จองรอเข้า: ${c.reserved}\n`;
+    if (wQ.length > 0) {
+      const srcs = {};
+      wQ.forEach(q => srcs[q.source] = (srcs[q.source] || 0) + 1);
+      const ss = Object.entries(srcs).map(([s,n]) => `${s}=${n}`).join(', ');
+      txt += `   • คิว admit: ${wQ.length} (${ss})\n`;
+    }
+    txt += `   ➡ ใช้งาน ${used}/${w.count}\n\n`;
+    gO += c.occupied; gV += c.vacant; gD += c.pending_dc; gR += c.reserved; gT += w.count;
+  });
+  txt += `${'─'.repeat(28)}\n`;
+  txt += `รวม ${gT} เตียง · เต็ม ${gO} · รอ D/C ${gD} · ว่าง ${gV}`;
+  if (gR > 0) txt += ` · จอง ${gR}`;
+  txt += `\nคิวรอ admit ทั้งหมด: ${admitQueue.length} ราย`;
+  document.getElementById('reportOutput').textContent = txt;
+}
+async function copyReport() {
+  const txt = document.getElementById('reportOutput').textContent;
+  try {
+    await navigator.clipboard.writeText(txt);
+    showToast('✓ คัดลอกแล้ว · พร้อมวางใน LINE');
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = txt;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('คัดลอกแล้ว');
+  }
+}
+
+/* ═════════════ Helpers ═════════════ */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 let toastTimer = null;
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -896,52 +1329,47 @@ function showToast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
-document.getElementById('modalOverlay').addEventListener('click', (e) => {
-  if (e.target.id === 'modalOverlay') closeModal();
+/* Click outside to close modals */
+['modalOverlay','admitOrderOverlay','admitQueueOverlay','pickQueueOverlay','reportOverlay'].forEach(id => {
+  document.getElementById(id).addEventListener('click', (e) => {
+    if (e.target.id === id) {
+      if (id === 'modalOverlay') closeModal();
+      else if (id === 'admitOrderOverlay') closeAdmitOrderModal();
+      else if (id === 'admitQueueOverlay') closeAdmitQueueModal();
+      else if (id === 'pickQueueOverlay') closePickQueueModal();
+      else if (id === 'reportOverlay') closeReportModal();
+    }
+  });
 });
 
 /* Long-press on title to reset credentials */
-let titlePressTimer = null;
-document.querySelector('header h1')?.addEventListener('mousedown', startTitlePress);
-document.querySelector('header h1')?.addEventListener('touchstart', startTitlePress);
-function startTitlePress() {
-  titlePressTimer = setTimeout(() => {
+let titleTimer = null;
+function startTitleHold() {
+  titleTimer = setTimeout(() => {
     if (confirm('รีเซ็ตการเชื่อมต่อ Supabase?')) {
       localStorage.removeItem(CRED_KEY);
       location.reload();
     }
   }, 2000);
 }
+document.querySelector('.brand h1').addEventListener('mousedown', startTitleHold);
+document.querySelector('.brand h1').addEventListener('touchstart', startTitleHold);
 ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev => {
-  document.querySelector('header h1')?.addEventListener(ev, () => clearTimeout(titlePressTimer));
+  document.querySelector('.brand h1').addEventListener(ev, () => clearTimeout(titleTimer));
 });
 
-/* ---------- Boot ---------- */
+/* ═════════════ Boot ═════════════ */
 (async () => {
-  // Priority 1: Use embedded URL/KEY if both present
   if (EMBEDDED_URL && EMBEDDED_KEY) {
-    try {
-      await initSupabase(EMBEDDED_URL, EMBEDDED_KEY);
-      return;
-    } catch (e) {
-      showSetup('Embedded credentials ใช้ไม่ได้: ' + e.message);
-      return;
+    try { await initSupabase(EMBEDDED_URL, EMBEDDED_KEY); } catch (e) { showSetup('Embedded credentials error: ' + e.message); }
+  } else {
+    const saved = localStorage.getItem(CRED_KEY);
+    if (saved) {
+      try { const { url, key } = JSON.parse(saved); await initSupabase(url, key); } catch (e) { showSetup(); }
+    } else {
+      showSetup();
     }
   }
-  // Priority 2: Use saved credentials from previous setup
-  const saved = localStorage.getItem(CRED_KEY);
-  if (saved) {
-    try {
-      const { url, key } = JSON.parse(saved);
-      await initSupabase(url, key);
-      return;
-    } catch (e) {
-      showSetup('โหลด credentials ผิดพลาด');
-      return;
-    }
-  }
-  // Priority 3: Show setup screen
-  showSetup();
 })();
 </script>
 </body>
