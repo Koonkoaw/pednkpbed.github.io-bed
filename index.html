@@ -183,22 +183,22 @@ body {
 .stat-cell.qad::after  { content:'⌄'; position:absolute; top:7px; right:7px; font-size:13px; color:var(--admit-q); font-weight:800; }
 
 /* Tabs */
-.tabs { flex:0 0 auto; display:flex; gap:7px; padding:9px 10px; background:var(--surface); border-bottom:1px solid var(--line); }
+.tabs { flex:0 0 auto; display:flex; gap:5px; padding:9px 8px; background:var(--surface); border-bottom:1px solid var(--line); }
 .tab {
   flex:1; min-width:0;
-  padding:16px 8px;
+  padding:14px 4px;
   background:var(--surface);
   border:2.5px solid var(--line);
-  border-radius:11px;
+  border-radius:10px;
   font-family:var(--font-pixel);
-  font-size:14px;
+  font-size:12px;
   font-weight:400;
   color:var(--ink-soft);
   cursor:pointer;
   transition:all .12s ease;
   white-space:nowrap;
   display:flex; align-items:center; justify-content:center;
-  gap:8px;
+  gap:5px;
   letter-spacing:.02em;
 }
 .tab.active {
@@ -208,9 +208,9 @@ body {
 }
 .tab .count {
   font-family:var(--font-pixel);
-  font-size:11px;
-  padding:3px 7px;
-  border-radius:5px;
+  font-size:10px;
+  padding:2px 5px;
+  border-radius:4px;
   background:var(--bg);
   color:var(--ink-soft);
   border:1.5px solid var(--line-strong);
@@ -691,6 +691,12 @@ const WARDS = [
       { name: 'เตียงทั่วไป', cls: 'normal', beds: [1,2,3,4,5,6,7,8,9,10,11], cols: 4 },
       { name: 'ห้องรวม 4 เตียง', cls: 'shared', beds: [12,13,14,15], cols: 4 }
     ]
+  },
+  {
+    id: 'pods', name: 'PODS', count: 12,
+    layout: [
+      { name: 'เตียงรวม', cls: 'normal', beds: [1,2,3,4,5,6,7,8,9,10,11,12], cols: 4 }
+    ]
   }
 ];
 
@@ -701,7 +707,8 @@ const SOURCES = [
   { id:'REFER', name:'Refer', desc:'รับส่งต่อ' },
   { id:'PICU', name:'PICU', desc:'จาก ICU' },
   { id:'12_2', name:'12/2', desc:'ระหว่าง ward' },
-  { id:'9_3', name:'9/3', desc:'ระหว่าง ward' }
+  { id:'9_3', name:'9/3', desc:'ระหว่าง ward' },
+  { id:'PODS', name:'PODS', desc:'ระหว่าง ward' }
 ];
 const SHIFTS = {
   morning:   { name:'เช้า',  range:'08:00-16:00' },
