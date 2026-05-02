@@ -1278,8 +1278,8 @@ async function setStatus(newStatus, dcOrderedBy = null) {
     return;
   }
 
-  // Log dc_complete ONLY when doctor ordered the D/C
-  if (prevStatus === 'pending_dc' && newStatus === 'vacant' && dcOrderedAt && dcOrderedByDb === 'doctor') {
+  // Log dc_complete UNLESS nurse explicitly ordered (default counts: doctor or unknown)
+  if (prevStatus === 'pending_dc' && newStatus === 'vacant' && dcOrderedAt && dcOrderedByDb !== 'nurse') {
     const durationMin = (Date.now() - new Date(dcOrderedAt).getTime()) / 60000;
     await logEvent(ward, 'dc_complete', durationMin, {
       bed_number: idx + 1,
