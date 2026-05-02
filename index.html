@@ -1202,13 +1202,19 @@ function openModal(wardId, idx) {
     // Nurse
     if (status === 'vacant') {
       const wardQ = admitQueue.filter(q => q.ward === wardId).length;
-      addAction(actions, 'btn-admit', `หยิบจากคิว Admit (${wardQ})`, `เลือกคนไข้รอ admit`, openPickQueueForBed);
+      if (wardQ > 0) {
+        addAction(actions, 'btn-admit', `รับคนไข้จากคิว Admit (${wardQ})`, `เลือกคนไข้รอ admit · จะตัดคิว+นับเวลา`, openPickQueueForBed);
+      }
       addAction(actions, 'btn-reserve', 'จองเตียง (รอเข้า)', 'เตียงนี้กันไว้รอคนไข้', () => setStatus('reserved'));
-      addAction(actions, 'btn-occupy', 'รับคนไข้ walk-in', 'เปลี่ยนเป็นเตียงเต็มทันที', () => setStatus('occupied'));
+      addAction(actions, 'btn-occupy', wardQ > 0 ? 'รับคนไข้ walk-in (ไม่ตัดคิว)' : 'รับคนไข้ walk-in', wardQ > 0 ? 'ใช้กรณีคนไข้คนละคนกับในคิว' : 'เปลี่ยนเป็นเตียงเต็มทันที', () => setStatus('occupied'));
     } else if (status === 'reserved') {
       const wardQ = admitQueue.filter(q => q.ward === wardId).length;
-      addAction(actions, 'btn-admit', `หยิบจากคิว Admit (${wardQ})`, `เลือกคนไข้รอ admit`, openPickQueueForBed);
-      addAction(actions, 'btn-occupy', 'รับคนไข้เข้าเตียงทันที', 'เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
+      if (wardQ > 0) {
+        addAction(actions, 'btn-admit', `รับคนไข้จากคิว Admit (${wardQ})`, `เลือกคนไข้ที่ตรงกับเตียงจองนี้ · จะตัดคิว+นับเวลา`, openPickQueueForBed);
+        addAction(actions, 'btn-occupy', 'รับคนไข้ walk-in (ไม่ตัดคิว)', 'ใช้กรณีคนไข้คนละคนกับในคิว', () => setStatus('occupied'));
+      } else {
+        addAction(actions, 'btn-occupy', 'รับคนไข้เข้าเตียงทันที', 'ไม่มีคิวรออยู่ · walk-in', () => setStatus('occupied'));
+      }
       addAction(actions, 'btn-discharge-done', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
     } else if (status === 'occupied') {
       addAction(actions, 'btn-discharge-order', 'สั่ง D/C (ฉุกเฉิน)', 'ไม่นับ metric · ปกติแพทย์เป็นคนสั่ง', () => setStatus('pending_dc', 'nurse'));
