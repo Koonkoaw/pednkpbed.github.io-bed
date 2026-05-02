@@ -191,7 +191,7 @@ body {
   display:flex;
   flex-direction:column;
   gap:7px;
-  pointer-events:none; /* HUD doesn't intercept taps on map */
+  pointer-events:none; /* container is pass-through */
 }
 .hud-card {
   background:rgba(13,27,42,.92);
@@ -204,6 +204,120 @@ body {
   color:#fff;
   position:relative;
   image-rendering:pixelated;
+}
+.hud-card.clickable {
+  pointer-events:auto;
+  cursor:pointer;
+  transition:transform .1s steps(2,end);
+}
+.hud-card.clickable:active {
+  transform:translate(2px,2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+.hud-card.clickable::after {
+  content:'▸';
+  position:absolute;
+  bottom:5px; right:6px;
+  font-size:9px;
+  color:#FFD600;
+  animation:blink 1.2s steps(2,end) infinite;
+}
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+
+/* Admit metrics breakdown */
+.metric-source-list {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:6px 0 14px;
+}
+.metric-source-row {
+  display:grid;
+  grid-template-columns: 70px 1fr auto;
+  align-items:center;
+  gap:10px;
+  padding:10px 12px;
+  background:var(--bg);
+  border:1.5px solid var(--line);
+  border-radius:9px;
+}
+.metric-source-row .src-name {
+  font-family:var(--font-pixel);
+  font-size:11px;
+  color:var(--ink);
+  letter-spacing:.03em;
+}
+.metric-source-row .src-bar-wrap {
+  position:relative;
+  height:18px;
+  background:var(--surface);
+  border:1.5px solid var(--line-strong);
+  border-radius:4px;
+  overflow:hidden;
+}
+.metric-source-row .src-bar {
+  position:absolute;
+  inset:0;
+  background:linear-gradient(90deg, var(--admit-q-bg) 0%, var(--admit-q) 100%);
+  transform-origin:left;
+}
+.metric-source-row .src-stats {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  min-width:62px;
+}
+.metric-source-row .src-stats .avg {
+  font-family:var(--font-pixel);
+  font-size:13px;
+  color:var(--admit-q);
+  line-height:1;
+}
+.metric-source-row .src-stats .avg .unit {
+  font-size:9px;
+  color:var(--ink-muted);
+  margin-left:3px;
+}
+.metric-source-row .src-stats .cases {
+  font-family:var(--font-thai);
+  font-size:11px;
+  color:var(--ink-muted);
+  margin-top:3px;
+  font-weight:600;
+}
+.metric-summary-bar {
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  padding:11px 13px;
+  background:var(--admit-q-bg);
+  border:2px solid var(--admit-q);
+  border-radius:10px;
+  margin-bottom:14px;
+}
+.metric-summary-bar .sum-label {
+  font-family:var(--font-thai);
+  font-size:12px;
+  color:var(--admit-q);
+  font-weight:700;
+}
+.metric-summary-bar .sum-value {
+  font-family:var(--font-pixel);
+  font-size:18px;
+  color:var(--admit-q);
+}
+.metric-summary-bar .sum-value .unit {
+  font-size:10px;
+  color:var(--ink-muted);
+  margin-left:4px;
+}
+.metric-empty {
+  text-align:center;
+  padding:24px 12px;
+  color:var(--ink-muted);
+  font-size:13px;
+  background:var(--bg);
+  border-radius:10px;
 }
 .hud-card.admit { border-color:#3b82f6; box-shadow: 3px 3px 0 #1d4ed8; }
 .hud-card.dc    { border-color:#ec4899; box-shadow: 3px 3px 0 #be185d; }
@@ -293,7 +407,7 @@ body {
 }
 
 /* Map fills remaining — scrollable when content overflows */
-.map-area { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; padding:10px 12px; min-height:0; -webkit-overflow-scrolling:touch; }
+.map-area { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; padding:10px 12px 170px; min-height:0; -webkit-overflow-scrolling:touch; }
 .ward-section { display:none; flex-direction:column; gap:14px; padding-bottom:8px; }
 .ward-section.active { display:flex; }
 
@@ -601,7 +715,7 @@ body {
 
   <!-- HUD: avg admit/dc waiting time (game-style, bottom-left) -->
   <div class="hud-stack" id="hudStack">
-    <div class="hud-card admit">
+    <div class="hud-card admit clickable" onclick="openAdmitMetricsDetail()">
       <div class="hud-row">
         <span class="hud-icon">⏱</span>
         <span class="hud-label">ADMIT WAIT</span>
@@ -756,6 +870,17 @@ body {
       <div style="text-align:center; width:100%; font-weight:800;">🖨️ พิมพ์รายงาน</div>
     </button>
     <button class="modal-close" onclick="closeReportModal()">ปิด</button>
+  </div>
+</div>
+
+<!-- Admit metrics detail modal: per-source breakdown -->
+<div class="modal-overlay" id="admitMetricsOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">⏱️ Admit Wait Time</h3>
+    <div class="modal-sub" id="admitMetricsSub">—</div>
+    <div id="admitMetricsBody"></div>
+    <button class="modal-close" onclick="closeAdmitMetricsDetail()">ปิด</button>
   </div>
 </div>
 
@@ -952,7 +1077,7 @@ async function logEvent(ward, eventType, durationMin, extra = {}) {
 }
 
 async function fetchMetrics() {
-  const { data, error } = await db.from('event_log').select('ward, event_type, duration_min');
+  const { data, error } = await db.from('event_log').select('ward, event_type, duration_min, source');
   if (error) {
     if (error.message.includes('event_log')) {
       console.warn('event_log table not found — metrics disabled');
@@ -963,20 +1088,36 @@ async function fetchMetrics() {
     renderMetrics();
     return;
   }
-  // Aggregate per ward+type
+  // Aggregate per ward+type, also track source breakdown for admit
   const agg = {};
   (data || []).forEach(r => {
-    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[] };
-    if (r.event_type === 'admit_complete') agg[r.ward].admit.push(r.duration_min);
-    else if (r.event_type === 'dc_complete') agg[r.ward].dc.push(r.duration_min);
+    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[], admit_by_source:{} };
+    if (r.event_type === 'admit_complete') {
+      agg[r.ward].admit.push(r.duration_min);
+      const src = r.source || 'UNKNOWN';
+      if (!agg[r.ward].admit_by_source[src]) agg[r.ward].admit_by_source[src] = [];
+      agg[r.ward].admit_by_source[src].push(r.duration_min);
+    } else if (r.event_type === 'dc_complete') {
+      agg[r.ward].dc.push(r.duration_min);
+    }
   });
   metrics = {};
   Object.keys(agg).forEach(ward => {
     const a = agg[ward].admit;
     const d = agg[ward].dc;
+    // Build per-source breakdown
+    const bySource = {};
+    Object.keys(agg[ward].admit_by_source).forEach(src => {
+      const arr = agg[ward].admit_by_source[src];
+      bySource[src] = {
+        avg: Math.round(arr.reduce((s,x) => s+x, 0) / arr.length),
+        count: arr.length
+      };
+    });
     metrics[ward] = {
       admit_avg: a.length ? Math.round(a.reduce((s,x) => s+x, 0) / a.length) : null,
       admit_count: a.length,
+      admit_by_source: bySource,
       dc_avg: d.length ? Math.round(d.reduce((s,x) => s+x, 0) / d.length) : null,
       dc_count: d.length
     };
@@ -990,6 +1131,67 @@ function renderMetrics() {
   document.getElementById('metricAdmitCount').textContent = `${m.admit_count} CASE`;
   document.getElementById('metricDc').textContent = m.dc_avg != null ? m.dc_avg : '--';
   document.getElementById('metricDcCount').textContent = `${m.dc_count} CASE`;
+}
+
+/* ─── Admit metrics drill-down modal ─── */
+function openAdmitMetricsDetail() {
+  const ward = WARDS.find(w => w.id === activeWard);
+  document.getElementById('admitMetricsSub').textContent = `${ward.name.toUpperCase()} · ตามต้นทาง`;
+
+  const m = metrics[activeWard];
+  const body = document.getElementById('admitMetricsBody');
+  body.innerHTML = '';
+
+  if (!m || m.admit_count === 0) {
+    body.innerHTML = '<div class="metric-empty">ยังไม่มีข้อมูล admit ที่จบในวอร์ดนี้</div>';
+    document.getElementById('admitMetricsOverlay').classList.add('active');
+    return;
+  }
+
+  // Overall summary
+  const summaryDiv = document.createElement('div');
+  summaryDiv.className = 'metric-summary-bar';
+  summaryDiv.innerHTML = `
+    <span class="sum-label">เฉลี่ยรวมทุกต้นทาง</span>
+    <span class="sum-value">${m.admit_avg}<span class="unit">นาที · ${m.admit_count} เคส</span></span>
+  `;
+  body.appendChild(summaryDiv);
+
+  // Build breakdown sorted by case count (most → least)
+  const sorted = Object.keys(m.admit_by_source)
+    .map(src => ({ src, ...m.admit_by_source[src] }))
+    .sort((a, b) => b.count - a.count);
+
+  // Find max for scaling bars
+  const maxAvg = Math.max(...sorted.map(s => s.avg), 1);
+
+  const list = document.createElement('div');
+  list.className = 'metric-source-list';
+  sorted.forEach(item => {
+    const sourceMeta = SOURCES.find(s => s.id === item.src);
+    const displayName = sourceMeta ? sourceMeta.name : item.src;
+    const widthPct = Math.max(8, (item.avg / maxAvg) * 100);
+    const row = document.createElement('div');
+    row.className = 'metric-source-row';
+    row.innerHTML = `
+      <span class="src-name">${displayName}</span>
+      <div class="src-bar-wrap">
+        <div class="src-bar" style="width:${widthPct}%"></div>
+      </div>
+      <div class="src-stats">
+        <span class="avg">${item.avg}<span class="unit">MIN</span></span>
+        <span class="cases">${item.count} เคส</span>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+  body.appendChild(list);
+
+  document.getElementById('admitMetricsOverlay').classList.add('active');
+}
+
+function closeAdmitMetricsDetail() {
+  document.getElementById('admitMetricsOverlay').classList.remove('active');
 }
 
 function subscribeRealtime() {
@@ -1557,7 +1759,7 @@ function showToast(msg) {
 }
 
 /* Click outside to close modals */
-['modalOverlay','admitOrderOverlay','admitQueueOverlay','pickQueueOverlay','reportOverlay'].forEach(id => {
+['modalOverlay','admitOrderOverlay','admitQueueOverlay','pickQueueOverlay','reportOverlay','admitMetricsOverlay'].forEach(id => {
   document.getElementById(id).addEventListener('click', (e) => {
     if (e.target.id === id) {
       if (id === 'modalOverlay') closeModal();
@@ -1565,6 +1767,7 @@ function showToast(msg) {
       else if (id === 'admitQueueOverlay') closeAdmitQueueModal();
       else if (id === 'pickQueueOverlay') closePickQueueModal();
       else if (id === 'reportOverlay') closeReportModal();
+      else if (id === 'admitMetricsOverlay') closeAdmitMetricsDetail();
     }
   });
 });
