@@ -182,6 +182,77 @@ body {
 .stat-cell.qad::before { background:var(--admit-q); }
 .stat-cell.qad::after  { content:'⌄'; position:absolute; top:7px; right:7px; font-size:13px; color:var(--admit-q); font-weight:800; }
 
+/* HUD overlay — game-style stats at bottom-left */
+.hud-stack {
+  position:fixed;
+  bottom:14px;
+  left:14px;
+  z-index:80;
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  pointer-events:none; /* HUD doesn't intercept taps on map */
+}
+.hud-card {
+  background:rgba(13,27,42,.92);
+  border:2px solid var(--ink);
+  border-radius:6px;
+  padding:7px 9px 6px;
+  box-shadow: 3px 3px 0 var(--ink);
+  min-width:110px;
+  font-family:var(--font-pixel);
+  color:#fff;
+  position:relative;
+  image-rendering:pixelated;
+}
+.hud-card.admit { border-color:#3b82f6; box-shadow: 3px 3px 0 #1d4ed8; }
+.hud-card.dc    { border-color:#ec4899; box-shadow: 3px 3px 0 #be185d; }
+.hud-card::before {
+  content:'';
+  position:absolute;
+  top:3px; left:3px;
+  width:5px; height:5px;
+  background:#FFD600;
+}
+.hud-row {
+  display:flex;
+  align-items:center;
+  gap:5px;
+  margin-bottom:4px;
+}
+.hud-icon {
+  font-size:11px;
+  line-height:1;
+}
+.hud-label {
+  font-size:7px;
+  letter-spacing:.06em;
+  color:#FFD600;
+  line-height:1;
+}
+.hud-value {
+  display:flex;
+  align-items:baseline;
+  gap:4px;
+}
+.hud-num {
+  font-size:18px;
+  line-height:1;
+  color:#fff;
+}
+.hud-unit {
+  font-size:8px;
+  color:#94a3b8;
+  letter-spacing:.05em;
+}
+.hud-count {
+  font-size:7px;
+  color:#94a3b8;
+  letter-spacing:.05em;
+  margin-top:3px;
+  line-height:1;
+}
+
 /* Tabs */
 .tabs { flex:0 0 auto; display:flex; gap:5px; padding:9px 8px; background:var(--surface); border-bottom:1px solid var(--line); }
 .tab {
@@ -528,6 +599,32 @@ body {
   <!-- Map area -->
   <div class="map-area" id="mapArea"></div>
 
+  <!-- HUD: avg admit/dc waiting time (game-style, bottom-left) -->
+  <div class="hud-stack" id="hudStack">
+    <div class="hud-card admit">
+      <div class="hud-row">
+        <span class="hud-icon">⏱</span>
+        <span class="hud-label">ADMIT WAIT</span>
+      </div>
+      <div class="hud-value">
+        <span class="hud-num" id="metricAdmit">--</span>
+        <span class="hud-unit">MIN</span>
+      </div>
+      <div class="hud-count" id="metricAdmitCount">0 CASE</div>
+    </div>
+    <div class="hud-card dc">
+      <div class="hud-row">
+        <span class="hud-icon">⎋</span>
+        <span class="hud-label">DC WAIT</span>
+      </div>
+      <div class="hud-value">
+        <span class="hud-num" id="metricDc">--</span>
+        <span class="hud-unit">MIN</span>
+      </div>
+      <div class="hud-count" id="metricDcCount">0 CASE</div>
+    </div>
+  </div>
+
   <!-- FAB -->
   <div class="fab-stack">
     <button class="fab report" onclick="openReportModal()" title="รายงานเวร">
@@ -724,6 +821,7 @@ const EMBEDDED_KEY = 'sb_publishable_RlcGZ2RC6pbnj-5-5vq_kA_Z_85PP4q';
 let db = null;
 let state = freshState();
 let admitQueue = [];
+let metrics = {};   // { ward_id: { admit_avg, admit_count, dc_avg, dc_count } }
 let activeWard = WARDS[0].id;
 let currentBed = null;
 let currentRole = null;
@@ -770,6 +868,7 @@ async function initSupabase(url, key) {
     await ensureBedsExist();
     await fetchAll();
     await fetchAdmitQueue();
+    await fetchMetrics();
     subscribeRealtime();
     setLive(true);
   } catch (e) {
@@ -827,6 +926,70 @@ async function fetchAdmitQueue() {
   }
   admitQueue = data || [];
   renderStats();
+}
+
+/* ─── Event log + metrics ─── */
+async function logEvent(ward, eventType, durationMin, extra = {}) {
+  // extra can include: source, bed_number, ordered_at
+  const row = {
+    ward,
+    event_type: eventType,        // 'admit_complete' | 'dc_complete'
+    duration_min: Math.max(0, Math.round(durationMin)),
+    source: extra.source || null,
+    bed_number: extra.bed_number || null,
+    ordered_at: extra.ordered_at || new Date().toISOString()
+  };
+  const { error } = await db.from('event_log').insert(row);
+  if (error) {
+    if (error.message.includes('event_log')) {
+      console.warn('event_log table not found — run the SQL setup');
+    } else {
+      console.error('logEvent error', error);
+    }
+    return;
+  }
+  await fetchMetrics();
+}
+
+async function fetchMetrics() {
+  const { data, error } = await db.from('event_log').select('ward, event_type, duration_min');
+  if (error) {
+    if (error.message.includes('event_log')) {
+      console.warn('event_log table not found — metrics disabled');
+    } else {
+      console.error('fetchMetrics error', error);
+    }
+    metrics = {};
+    renderMetrics();
+    return;
+  }
+  // Aggregate per ward+type
+  const agg = {};
+  (data || []).forEach(r => {
+    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[] };
+    if (r.event_type === 'admit_complete') agg[r.ward].admit.push(r.duration_min);
+    else if (r.event_type === 'dc_complete') agg[r.ward].dc.push(r.duration_min);
+  });
+  metrics = {};
+  Object.keys(agg).forEach(ward => {
+    const a = agg[ward].admit;
+    const d = agg[ward].dc;
+    metrics[ward] = {
+      admit_avg: a.length ? Math.round(a.reduce((s,x) => s+x, 0) / a.length) : null,
+      admit_count: a.length,
+      dc_avg: d.length ? Math.round(d.reduce((s,x) => s+x, 0) / d.length) : null,
+      dc_count: d.length
+    };
+  });
+  renderMetrics();
+}
+
+function renderMetrics() {
+  const m = metrics[activeWard] || { admit_avg: null, admit_count: 0, dc_avg: null, dc_count: 0 };
+  document.getElementById('metricAdmit').textContent = m.admit_avg != null ? m.admit_avg : '--';
+  document.getElementById('metricAdmitCount').textContent = `${m.admit_count} CASE`;
+  document.getElementById('metricDc').textContent = m.dc_avg != null ? m.dc_avg : '--';
+  document.getElementById('metricDcCount').textContent = `${m.dc_count} CASE`;
 }
 
 function subscribeRealtime() {
@@ -891,7 +1054,7 @@ function buildTabs() {
     const btn = document.createElement('button');
     btn.className = 'tab' + (w.id === activeWard ? ' active' : '');
     btn.innerHTML = `${w.name} <span class="count">${w.count}</span>`;
-    btn.onclick = () => { activeWard = w.id; buildTabs(); renderAll(); };
+    btn.onclick = () => { activeWard = w.id; buildTabs(); renderAll(); renderMetrics(); };
     tabs.appendChild(btn);
   });
 }
@@ -1022,7 +1185,7 @@ function openModal(wardId, idx) {
 
   if (currentRole === 'doctor') {
     if (status === 'occupied') {
-      addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'พยาบาลจะเคลียร์เตียงต่อ', () => setStatus('pending_dc'));
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'พยาบาลจะเคลียร์เตียงต่อ', () => setStatus('pending_dc', 'doctor'));
     } else if (status === 'pending_dc') {
       addAction(actions, 'btn-occupy', 'ยกเลิกคำสั่ง D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
     } else {
@@ -1048,7 +1211,7 @@ function openModal(wardId, idx) {
       addAction(actions, 'btn-occupy', 'รับคนไข้เข้าเตียงทันที', 'เปลี่ยนเป็นเตียงเต็ม', () => setStatus('occupied'));
       addAction(actions, 'btn-discharge-done', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
     } else if (status === 'occupied') {
-      addAction(actions, 'btn-discharge-order', 'สั่ง D/C (ฉุกเฉิน)', 'ปกติแพทย์เป็นคนสั่ง', () => setStatus('pending_dc'));
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C (ฉุกเฉิน)', 'ไม่นับ metric · ปกติแพทย์เป็นคนสั่ง', () => setStatus('pending_dc', 'nurse'));
     } else if (status === 'pending_dc') {
       addAction(actions, 'btn-discharge-done', 'คนไข้ออกแล้ว ✓', 'เคลียร์เตียง → ว่าง', () => setStatus('vacant'));
       addAction(actions, 'btn-occupy', 'ยกเลิก D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
@@ -1069,16 +1232,57 @@ function closeModal() {
   currentBed = null;
 }
 
-async function setStatus(newStatus) {
+async function setStatus(newStatus, dcOrderedBy = null) {
   if (!currentBed) return;
   const { ward, idx } = currentBed;
+  const prevStatus = state[ward][idx];
+
+  // Capture timestamp + who ordered (for dc_complete log)
+  let dcOrderedAt = null;
+  let dcOrderedByDb = null;
+  if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
+    const { data } = await db.from('beds')
+      .select('updated_at, dc_ordered_by')
+      .eq('ward', ward).eq('bed_number', idx + 1).single();
+    if (data) {
+      dcOrderedAt = data.updated_at;
+      dcOrderedByDb = data.dc_ordered_by;
+    }
+  }
+
   state[ward][idx] = newStatus;
   renderAll();
   closeModal();
-  const { error } = await db.from('beds').update({ status:newStatus, updated_at:new Date().toISOString() }).eq('ward', ward).eq('bed_number', idx + 1);
+
+  // Build update payload
+  const payload = { status: newStatus, updated_at: new Date().toISOString() };
+  if (newStatus === 'pending_dc') {
+    // Mark who ordered the D/C
+    payload.dc_ordered_by = dcOrderedBy || currentRole || 'unknown';
+  } else {
+    // Clear dc_ordered_by when bed leaves pending_dc
+    payload.dc_ordered_by = null;
+  }
+
+  const { error } = await db.from('beds').update(payload)
+    .eq('ward', ward).eq('bed_number', idx + 1);
   if (error) {
     showToast('บันทึกไม่สำเร็จ: ' + error.message);
     await fetchAll();
+    return;
+  }
+
+  // Log dc_complete ONLY when doctor ordered the D/C
+  if (prevStatus === 'pending_dc' && newStatus === 'vacant' && dcOrderedAt && dcOrderedByDb === 'doctor') {
+    const durationMin = (Date.now() - new Date(dcOrderedAt).getTime()) / 60000;
+    await logEvent(ward, 'dc_complete', durationMin, {
+      bed_number: idx + 1,
+      ordered_at: dcOrderedAt
+    });
+    showToast(`เคลียร์เตียงแล้ว · รอออก ${Math.round(durationMin)} นาที`);
+  } else if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
+    // Nurse-ordered DC: don't log (skip metric)
+    showToast('เคลียร์เตียงแล้ว (ฉุกเฉิน · ไม่นับ metric)');
   } else {
     showToast(`อัพเดท → ${STATUS_LABELS[newStatus]}`);
   }
@@ -1239,11 +1443,21 @@ async function acceptQueueItem(q) {
   const { error: e1 } = await db.from('beds').update({ status:'occupied', updated_at:new Date().toISOString() }).eq('ward', currentBed.ward).eq('bed_number', currentBed.idx + 1);
   if (e1) { showToast('ไม่สำเร็จ: ' + e1.message); return; }
   await db.from('admit_queue').delete().eq('id', q.id);
+
+  // Log admit_complete event
+  const orderedAt = new Date(q.created_at);
+  const durationMin = (Date.now() - orderedAt.getTime()) / 60000;
+  await logEvent(currentBed.ward, 'admit_complete', durationMin, {
+    source: q.source,
+    bed_number: currentBed.idx + 1,
+    ordered_at: q.created_at
+  });
+
   state[currentBed.ward][currentBed.idx] = 'occupied';
   renderAll();
   closePickQueueModal();
   await fetchAdmitQueue();
-  showToast(`รับ ${q.source} เข้าเตียงแล้ว`);
+  showToast(`รับ ${q.source} เข้าเตียงแล้ว · รอ ${Math.round(durationMin)} นาที`);
 }
 async function walkInOccupy() {
   if (!currentBed) return;
