@@ -657,11 +657,137 @@ body {
 .shift-select button.selected { background:var(--ink); color:white; border-color:var(--ink); }
 .shift-select button .sh-time { display:block; font-size:9px; font-weight:500; opacity:.7; margin-top:2px; font-family:'JetBrains Mono',monospace; }
 
+/* Report tabs */
+.report-tabs { display:flex; gap:5px; margin-bottom:12px; padding:3px; background:var(--bg); border-radius:9px; }
+.rt-tab { flex:1; padding:9px; border:none; background:transparent; font-family:inherit; font-size:13px; font-weight:700; color:var(--ink-soft); cursor:pointer; border-radius:7px; }
+.rt-tab.active { background:var(--surface); color:var(--ink); box-shadow:0 1px 4px rgba(0,0,0,.08); }
+
+/* Monthly report controls */
+.month-controls { display:flex; gap:8px; margin-bottom:10px; }
+.mc-row { flex:1; display:flex; flex-direction:column; gap:3px; }
+.month-input, .month-select {
+  padding:9px 11px;
+  border:1.5px solid var(--line-strong);
+  border-radius:8px;
+  background:var(--surface);
+  font-family:inherit;
+  font-size:13px;
+  color:var(--ink);
+  width:100%;
+}
+
+/* Monthly report output */
+.month-output {
+  background:var(--surface);
+  border:1.5px solid var(--line);
+  border-radius:10px;
+  padding:14px 16px;
+  margin:10px 0;
+  font-family:var(--font-thai);
+  max-height:55vh;
+  overflow-y:auto;
+}
+.mr-header {
+  text-align:center;
+  margin-bottom:14px;
+  padding-bottom:10px;
+  border-bottom:2px solid var(--ink);
+}
+.mr-header h2 {
+  font-family:var(--font-pixel);
+  font-size:13px;
+  margin-bottom:5px;
+  color:var(--ink);
+}
+.mr-header .mr-subtitle {
+  font-size:14px;
+  color:var(--ink-soft);
+  font-weight:600;
+}
+.mr-section { margin-bottom:16px; }
+.mr-section-title {
+  font-family:var(--font-pixel);
+  font-size:11px;
+  color:var(--ink);
+  margin-bottom:8px;
+  padding:5px 0;
+  border-bottom:1.5px dashed var(--line-strong);
+  letter-spacing:.04em;
+}
+.mr-summary-grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-bottom:6px;
+}
+.mr-stat-card {
+  padding:10px 12px;
+  border:1.5px solid var(--line);
+  border-radius:9px;
+  background:var(--bg);
+  position:relative;
+  overflow:hidden;
+}
+.mr-stat-card::before {
+  content:''; position:absolute; left:0; top:0; bottom:0; width:4px;
+}
+.mr-stat-card.admit::before { background:var(--admit-q); }
+.mr-stat-card.dc::before    { background:var(--pending-dc); }
+.mr-stat-card .mr-stat-label {
+  font-size:11px;
+  color:var(--ink-soft);
+  font-weight:600;
+  margin-bottom:4px;
+}
+.mr-stat-card .mr-stat-value {
+  font-family:var(--font-pixel);
+  font-size:18px;
+  color:var(--ink);
+  line-height:1;
+}
+.mr-stat-card .mr-stat-sub {
+  font-size:11px;
+  color:var(--ink-muted);
+  margin-top:4px;
+  font-weight:500;
+}
+.mr-source-row {
+  display:grid;
+  grid-template-columns:80px 1fr auto;
+  gap:8px;
+  align-items:center;
+  padding:7px 10px;
+  background:var(--bg);
+  border:1px solid var(--line);
+  border-radius:7px;
+  margin-bottom:5px;
+}
+.mr-source-row .src-name { font-size:13px; font-weight:700; color:var(--ink); }
+.mr-source-row .src-bar-wrap {
+  position:relative; height:10px; background:var(--surface);
+  border:1px solid var(--line-strong); border-radius:3px; overflow:hidden;
+}
+.mr-source-row .src-bar { position:absolute; inset:0; background:var(--admit-q); }
+.mr-source-row .src-stats {
+  font-family:'JetBrains Mono', monospace;
+  font-size:11px; color:var(--ink); font-weight:700; white-space:nowrap;
+}
+.mr-empty {
+  text-align:center;
+  padding:30px 12px;
+  color:var(--ink-muted);
+  font-size:13px;
+}
+
 @media print {
-  html, body { overflow:visible !important; height:auto !important; }
-  .topbar, .stats-strip, .tabs, .fab-stack, .modal-overlay, .toast { display:none !important; }
-  .map-area { overflow:visible; padding:16px; }
-  .ward-section { display:flex !important; page-break-after:always; }
+  html, body { overflow:visible !important; height:auto !important; background:#fff !important; }
+  .topbar, .stats-strip, .tabs, .fab-stack, .toast, .hud-stack, .map-area, .no-print { display:none !important; }
+  .modal-overlay { position:static !important; background:#fff !important; display:block !important; }
+  .modal-overlay:not(.active) { display:none !important; }
+  .modal { box-shadow:none !important; border:none !important; max-height:none !important; padding:0 !important; }
+  .modal-handle, .modal-close { display:none !important; }
+  .month-output { max-height:none !important; overflow:visible !important; border:none !important; padding:0 !important; }
+  .report-output { max-height:none !important; overflow:visible !important; }
 }
 </style>
 </head>
@@ -856,20 +982,52 @@ body {
 <div class="modal-overlay" id="reportOverlay">
   <div class="modal">
     <div class="modal-handle"></div>
-    <h3 class="modal-title">รายงานจำนวนเตียง</h3>
+    <h3 class="modal-title">รายงาน</h3>
     <div class="modal-sub" id="reportDateSub">—</div>
-    <label class="form-label">เลือกเวร</label>
-    <div class="shift-select" id="shiftSelect">
-      <button data-shift="morning" onclick="setReportShift('morning')">เช้า<span class="sh-time">08-16</span></button>
-      <button data-shift="afternoon" onclick="setReportShift('afternoon')">บ่าย<span class="sh-time">16-24</span></button>
-      <button data-shift="night" onclick="setReportShift('night')">ดึก<span class="sh-time">00-08</span></button>
+
+    <!-- Report type tabs -->
+    <div class="report-tabs no-print">
+      <button class="rt-tab active" data-rt="shift" onclick="switchReportTab('shift')">รายงานเวร</button>
+      <button class="rt-tab" data-rt="monthly" onclick="switchReportTab('monthly')">รายงานเดือน</button>
     </div>
-    <div class="report-output" id="reportOutput">—</div>
-    <button class="copy-btn" onclick="copyReport()">📋 Copy ข้อความ (สำหรับ LINE)</button>
-    <button class="action-btn" onclick="window.print()" style="justify-content:center;">
+
+    <!-- SHIFT REPORT -->
+    <div class="report-pane" id="reportPaneShift">
+      <label class="form-label no-print">เลือกเวร</label>
+      <div class="shift-select no-print" id="shiftSelect">
+        <button data-shift="morning" onclick="setReportShift('morning')">เช้า<span class="sh-time">08-16</span></button>
+        <button data-shift="afternoon" onclick="setReportShift('afternoon')">บ่าย<span class="sh-time">16-24</span></button>
+        <button data-shift="night" onclick="setReportShift('night')">ดึก<span class="sh-time">00-08</span></button>
+      </div>
+      <div class="report-output" id="reportOutput">—</div>
+      <button class="copy-btn no-print" onclick="copyReport()">📋 Copy ข้อความ (สำหรับ LINE)</button>
+    </div>
+
+    <!-- MONTHLY REPORT -->
+    <div class="report-pane" id="reportPaneMonthly" style="display:none;">
+      <div class="month-controls no-print">
+        <div class="mc-row">
+          <label class="form-label">เดือน</label>
+          <input type="month" id="monthInput" class="month-input" />
+        </div>
+        <div class="mc-row">
+          <label class="form-label">Ward</label>
+          <select id="monthWard" class="month-select" onchange="renderMonthlyReport()">
+            <option value="all">ทุก ward</option>
+            <option value="picu">PICU</option>
+            <option value="12_2">12/2</option>
+            <option value="9_3">9/3</option>
+            <option value="pods">PODS</option>
+          </select>
+        </div>
+      </div>
+      <div class="month-output" id="monthOutput">—</div>
+    </div>
+
+    <button class="action-btn no-print" onclick="window.print()" style="justify-content:center;">
       <div style="text-align:center; width:100%; font-weight:800;">🖨️ พิมพ์รายงาน</div>
     </button>
-    <button class="modal-close" onclick="closeReportModal()">ปิด</button>
+    <button class="modal-close no-print" onclick="closeReportModal()">ปิด</button>
   </div>
 </div>
 
@@ -1735,13 +1893,163 @@ function openReportModal() {
   document.getElementById('reportDateSub').textContent = fmtThaiDate(new Date());
   document.querySelectorAll('#shiftSelect button').forEach(b => b.classList.toggle('selected', b.dataset.shift === reportShift));
   buildReport();
+  // Default month input = current month
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  document.getElementById('monthInput').value = ym;
+  document.getElementById('monthInput').onchange = renderMonthlyReport;
+  // Default ward selector to active ward
+  document.getElementById('monthWard').value = activeWard;
   document.getElementById('reportOverlay').classList.add('active');
 }
 function closeReportModal() { document.getElementById('reportOverlay').classList.remove('active'); }
+
+function switchReportTab(which) {
+  document.querySelectorAll('.rt-tab').forEach(t => t.classList.toggle('active', t.dataset.rt === which));
+  document.getElementById('reportPaneShift').style.display   = which === 'shift'   ? '' : 'none';
+  document.getElementById('reportPaneMonthly').style.display = which === 'monthly' ? '' : 'none';
+  if (which === 'monthly') renderMonthlyReport();
+}
+
 function setReportShift(s) {
   reportShift = s;
   document.querySelectorAll('#shiftSelect button').forEach(b => b.classList.toggle('selected', b.dataset.shift === s));
   buildReport();
+}
+
+/* ─── Monthly Report ─── */
+async function renderMonthlyReport() {
+  const monthVal = document.getElementById('monthInput').value;  // "2026-05"
+  const wardVal = document.getElementById('monthWard').value;
+  const out = document.getElementById('monthOutput');
+  if (!monthVal) { out.innerHTML = '<div class="mr-empty">กรุณาเลือกเดือน</div>'; return; }
+
+  // Compute date range
+  const [year, month] = monthVal.split('-').map(Number);
+  const startDate = new Date(year, month - 1, 1).toISOString();
+  const endDate = new Date(year, month, 1).toISOString();
+
+  out.innerHTML = '<div class="mr-empty">กำลังโหลด...</div>';
+
+  let query = db.from('event_log')
+    .select('ward, event_type, duration_min, source, completed_at')
+    .gte('completed_at', startDate)
+    .lt('completed_at', endDate);
+  if (wardVal !== 'all') query = query.eq('ward', wardVal);
+
+  const { data, error } = await query;
+  if (error) {
+    out.innerHTML = `<div class="mr-empty">ไม่สามารถโหลดข้อมูลได้: ${error.message}</div>`;
+    return;
+  }
+
+  buildMonthlyReportHTML(data || [], monthVal, wardVal, out);
+}
+
+function buildMonthlyReportHTML(rows, monthVal, wardVal, out) {
+  const [year, month] = monthVal.split('-').map(Number);
+  const monthNames = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน',
+                      'กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+  const monthLabel = `${monthNames[month - 1]} ${year + 543}`;
+  const wardName = wardVal === 'all' ? 'ทุก Ward' : (WARDS.find(w => w.id === wardVal)?.name || wardVal);
+
+  if (rows.length === 0) {
+    out.innerHTML = `
+      <div class="mr-header">
+        <h2>BED MANAGEMENT REPORT</h2>
+        <div class="mr-subtitle">${monthLabel} · ${wardName}</div>
+      </div>
+      <div class="mr-empty">ไม่มีข้อมูลในเดือนนี้</div>
+    `;
+    return;
+  }
+
+  // Aggregate
+  const admits = rows.filter(r => r.event_type === 'admit_complete');
+  const dcs = rows.filter(r => r.event_type === 'dc_complete');
+  const avg = arr => arr.length ? Math.round(arr.reduce((s,x) => s + x.duration_min, 0) / arr.length) : 0;
+  const admitAvg = avg(admits);
+  const dcAvg = avg(dcs);
+
+  // Source breakdown for admit
+  const bySource = {};
+  admits.forEach(r => {
+    const src = r.source || 'UNKNOWN';
+    if (!bySource[src]) bySource[src] = [];
+    bySource[src].push(r.duration_min);
+  });
+  const sourceList = Object.keys(bySource).map(src => ({
+    src,
+    count: bySource[src].length,
+    avg: Math.round(bySource[src].reduce((s,x) => s+x, 0) / bySource[src].length)
+  })).sort((a, b) => b.count - a.count);
+
+  const maxAvg = Math.max(...sourceList.map(s => s.avg), 1);
+
+  // Build HTML
+  let html = `
+    <div class="mr-header">
+      <h2>BED MANAGEMENT REPORT</h2>
+      <div class="mr-subtitle">${monthLabel} · ${wardName}</div>
+    </div>
+
+    <div class="mr-section">
+      <div class="mr-section-title">◆ สรุปจำนวนเคส</div>
+      <div class="mr-summary-grid">
+        <div class="mr-stat-card admit">
+          <div class="mr-stat-label">Admit สำเร็จ</div>
+          <div class="mr-stat-value">${admits.length}</div>
+          <div class="mr-stat-sub">เคสในเดือนนี้</div>
+        </div>
+        <div class="mr-stat-card dc">
+          <div class="mr-stat-label">D/C สำเร็จ</div>
+          <div class="mr-stat-value">${dcs.length}</div>
+          <div class="mr-stat-sub">เคสในเดือนนี้</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mr-section">
+      <div class="mr-section-title">◆ เวลาเฉลี่ยรอจัดการ</div>
+      <div class="mr-summary-grid">
+        <div class="mr-stat-card admit">
+          <div class="mr-stat-label">Admit Wait</div>
+          <div class="mr-stat-value">${admitAvg}<span style="font-size:11px;color:#666;"> นาที</span></div>
+          <div class="mr-stat-sub">หมอสั่ง → พยาบาลรับเข้า</div>
+        </div>
+        <div class="mr-stat-card dc">
+          <div class="mr-stat-label">DC Wait</div>
+          <div class="mr-stat-value">${dcAvg}<span style="font-size:11px;color:#666;"> นาที</span></div>
+          <div class="mr-stat-sub">หมอสั่ง → พยาบาลเคลียร์</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (sourceList.length > 0) {
+    html += `<div class="mr-section">
+      <div class="mr-section-title">◆ Admit แยกตามต้นทาง</div>`;
+    sourceList.forEach(item => {
+      const widthPct = Math.max(8, (item.avg / maxAvg) * 100);
+      const sourceMeta = SOURCES.find(s => s.id === item.src);
+      const displayName = sourceMeta ? sourceMeta.name : item.src;
+      html += `
+        <div class="mr-source-row">
+          <span class="src-name">${displayName}</span>
+          <div class="src-bar-wrap"><div class="src-bar" style="width:${widthPct}%"></div></div>
+          <span class="src-stats">${item.count} เคส · ${item.avg} นาที</span>
+        </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Footer
+  const today = new Date();
+  html += `<div style="font-size:10px; color:#999; text-align:center; margin-top:18px; padding-top:10px; border-top:1px dashed #ccc;">
+    Generated: ${today.toLocaleDateString('th-TH')} ${today.toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'})}
+  </div>`;
+
+  out.innerHTML = html;
 }
 function buildReport() {
   const now = new Date();
