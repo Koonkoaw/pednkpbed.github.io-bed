@@ -1600,6 +1600,8 @@ async function cancelQueueItem(id) {
 /* ═════════════ Pick from queue (nurse) ═════════════ */
 function openPickQueueForBed() {
   if (!currentBed) return;
+  // Save currentBed because closeModal() resets it
+  const savedBed = currentBed;
   const ward = WARDS.find(w => w.id === currentBed.ward);
   document.getElementById('pickQueueTitle').textContent = `${ward.name} เตียง ${currentBed.idx + 1}`;
   document.getElementById('pickQueueSub').textContent = 'เลือกคนไข้ในคิว → รับเข้าเตียง';
@@ -1628,6 +1630,8 @@ function openPickQueueForBed() {
     }
   }
   closeModal();
+  // Restore currentBed AFTER closeModal() so accept handlers can still see it
+  currentBed = savedBed;
   document.getElementById('pickQueueOverlay').classList.add('active');
 }
 function makeQueuePickItem(q) {
