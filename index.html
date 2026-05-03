@@ -1651,34 +1651,78 @@ function makeQueuePickItem(q) {
   return item;
 }
 async function acceptQueueItem(q) {
-  if (!currentBed) return;
-  const { error: e1 } = await db.from('beds').update({ status:'occupied', updated_at:new Date().toISOString() }).eq('ward', currentBed.ward).eq('bed_number', currentBed.idx + 1);
-  if (e1) { showToast('ไม่สำเร็จ: ' + e1.message); return; }
-  await db.from('admit_queue').delete().eq('id', q.id);
+  // Snapshot currentBed at click time — defensive against any race condition
+  const bed = currentBed;
+  if (!bed) {
+    showToast('ไม่พบเตียงที่เลือก กรุณากดเตียงใหม่');
+    closePickQueueModal();
+    return;
+  }
+  const { ward, idx } = bed;
 
-  // Log admit_complete event
-  const orderedAt = new Date(q.created_at);
-  const durationMin = (Date.now() - orderedAt.getTime()) / 60000;
-  await logEvent(currentBed.ward, 'admit_complete', durationMin, {
-    source: q.source,
-    bed_number: currentBed.idx + 1,
-    ordered_at: q.created_at
-  });
-
-  state[currentBed.ward][currentBed.idx] = 'occupied';
+  // Optimistic UI: close modal + render IMMEDIATELY (don't wait for db)
+  state[ward][idx] = 'occupied';
   renderAll();
   closePickQueueModal();
-  await fetchAdmitQueue();
+
+  const orderedAt = new Date(q.created_at);
+  const durationMin = (Date.now() - orderedAt.getTime()) / 60000;
   showToast(`รับ ${q.source} เข้าเตียงแล้ว · รอ ${Math.round(durationMin)} นาที`);
+
+  // DB writes — run in parallel, errors don't block UX
+  try {
+    const { error: e1 } = await db.from('beds')
+      .update({ status:'occupied', updated_at:new Date().toISOString() })
+      .eq('ward', ward).eq('bed_number', idx + 1);
+    if (e1) {
+      showToast('บันทึกเตียงไม่สำเร็จ: ' + e1.message);
+      await fetchAll(); return;
+    }
+    const { error: e2 } = await db.from('admit_queue').delete().eq('id', q.id);
+    if (e2) console.warn('delete queue failed:', e2);
+
+    // Log event - fire and forget (don't block on this)
+    logEvent(ward, 'admit_complete', durationMin, {
+      source: q.source,
+      bed_number: idx + 1,
+      ordered_at: q.created_at
+    }).catch(err => console.warn('logEvent failed:', err));
+
+    fetchAdmitQueue().catch(err => console.warn('fetchAdmitQueue failed:', err));
+  } catch (err) {
+    console.error('acceptQueueItem error:', err);
+    showToast('เกิดข้อผิดพลาด: ' + err.message);
+    await fetchAll();
+  }
 }
 async function walkInOccupy() {
-  if (!currentBed) return;
-  const { error } = await db.from('beds').update({ status:'occupied', updated_at:new Date().toISOString() }).eq('ward', currentBed.ward).eq('bed_number', currentBed.idx + 1);
-  if (error) { showToast('ไม่สำเร็จ'); return; }
-  state[currentBed.ward][currentBed.idx] = 'occupied';
+  const bed = currentBed;
+  if (!bed) {
+    showToast('ไม่พบเตียงที่เลือก');
+    closePickQueueModal();
+    return;
+  }
+  const { ward, idx } = bed;
+
+  // Optimistic UI
+  state[ward][idx] = 'occupied';
   renderAll();
   closePickQueueModal();
   showToast('รับเข้าเตียงแล้ว (walk-in)');
+
+  try {
+    const { error } = await db.from('beds')
+      .update({ status:'occupied', updated_at:new Date().toISOString() })
+      .eq('ward', ward).eq('bed_number', idx + 1);
+    if (error) {
+      showToast('บันทึกไม่สำเร็จ: ' + error.message);
+      await fetchAll();
+    }
+  } catch (err) {
+    console.error('walkInOccupy error:', err);
+    showToast('เกิดข้อผิดพลาด: ' + err.message);
+    await fetchAll();
+  }
 }
 function closePickQueueModal() {
   document.getElementById('pickQueueOverlay').classList.remove('active');
