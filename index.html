@@ -629,6 +629,40 @@ body {
 .action-btn.btn-transfer .desc { color:#1e40af; }
 .action-btn.btn-refer { background:#f5f3ff; border-color:#a78bfa; color:#6d28d9; }
 .action-btn.btn-refer .desc { color:#5b21b6; }
+
+/* Transfer destination picker grid */
+.transfer-grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:9px;
+  margin-bottom:14px;
+}
+.transfer-btn {
+  padding:18px 8px;
+  border:2px solid var(--line-strong);
+  border-radius:11px;
+  background:var(--surface);
+  font-family:inherit;
+  font-size:15px;
+  font-weight:800;
+  color:var(--ink);
+  cursor:pointer;
+  text-align:center;
+  transition:transform .1s ease;
+}
+.transfer-btn:active { transform:scale(.95); }
+.transfer-btn.disabled {
+  opacity:.4;
+  cursor:not-allowed;
+  background:var(--bg);
+}
+.transfer-btn .tb-sub {
+  display:block;
+  font-size:11px;
+  font-weight:500;
+  color:var(--ink-muted);
+  margin-top:3px;
+}
 .modal-close { width:100%; margin-top:6px; padding:10px; background:transparent; border:1px solid var(--line); border-radius:9px; color:var(--ink-soft); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }
 
 .source-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; margin-bottom:12px; }
@@ -856,7 +890,7 @@ body {
       </div>
       <div class="hud-count" id="metricAdmitCount">0 CASE</div>
     </div>
-    <div class="hud-card dc">
+    <div class="hud-card dc clickable" onclick="openDcMetricsDetail()">
       <div class="hud-row">
         <span class="hud-icon">⎋</span>
         <span class="hud-label">DC WAIT</span>
@@ -1046,6 +1080,28 @@ body {
   </div>
 </div>
 
+<!-- Transfer destination picker -->
+<div class="modal-overlay" id="transferPickerOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">เลือกปลายทาง</h3>
+    <div class="modal-sub" id="transferPickerSub">เลือก ward ที่จะย้ายไป</div>
+    <div class="transfer-grid" id="transferPickerGrid"></div>
+    <button class="modal-close" onclick="closeTransferPicker()">ยกเลิก</button>
+  </div>
+</div>
+
+<!-- DC metrics detail modal: per-category breakdown -->
+<div class="modal-overlay" id="dcMetricsOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h3 class="modal-title">⎋ DC Wait Time</h3>
+    <div class="modal-sub" id="dcMetricsSub">—</div>
+    <div id="dcMetricsBody"></div>
+    <button class="modal-close" onclick="closeDcMetricsDetail()">ปิด</button>
+  </div>
+</div>
+
 <div class="toast" id="toast">บันทึกแล้ว</div>
 
 <script>
@@ -1096,6 +1152,19 @@ const DC_TYPE_FULL = {
   transfer:  'ย้าย Ward',
   refer:     'Refer ต่อ'
 };
+
+// Transfer destinations
+const TRANSFER_DESTINATIONS = [
+  { id:'picu',    name:'PICU',    short:'PICU' },
+  { id:'12_2',    name:'12/2',    short:'12/2' },
+  { id:'9_3',     name:'9/3',     short:'9/3' },
+  { id:'pods',    name:'PODS',    short:'PODS' },
+  { id:'special', name:'พิเศษ',   short:'พิเศษ' }
+];
+function transferDestName(id) {
+  const d = TRANSFER_DESTINATIONS.find(x => x.id === id);
+  return d ? d.name : (id || '—');
+}
 const SOURCES = [
   { id:'ER', name:'ER', desc:'ห้องฉุกเฉิน' },
   { id:'OPD', name:'OPD', desc:'ผู้ป่วยนอก' },
@@ -1118,7 +1187,8 @@ const EMBEDDED_KEY = 'sb_publishable_RlcGZ2RC6pbnj-5-5vq_kA_Z_85PP4q';
 /* ═════════════ State ═════════════ */
 let db = null;
 let state = freshState();
-let dcTypes = freshDcTypes();   // { ward: [dc_type or null per bed] } — parallel to state
+let dcTypes = freshDcTypes();   // dc_type per bed
+let transferTos = freshTransferTos();   // transfer_to per bed (only relevant when dc_type=transfer)
 let admitQueue = [];
 let metrics = {};   // { ward_id: { admit_avg, admit_count, dc_avg, dc_count } }
 let activeWard = WARDS[0].id;
@@ -1134,6 +1204,11 @@ function freshState() {
   return s;
 }
 function freshDcTypes() {
+  const s = {};
+  WARDS.forEach(w => { s[w.id] = Array.from({length:w.count}, () => null); });
+  return s;
+}
+function freshTransferTos() {
   const s = {};
   WARDS.forEach(w => { s[w.id] = Array.from({length:w.count}, () => null); });
   return s;
@@ -1206,14 +1281,17 @@ async function fetchAll() {
   if (error) { showToast('โหลดข้อมูลไม่สำเร็จ'); return; }
   const fresh = freshState();
   const freshDc = freshDcTypes();
+  const freshTr = freshTransferTos();
   data.forEach(r => {
     if (fresh[r.ward] && r.bed_number >= 1 && r.bed_number <= fresh[r.ward].length) {
       fresh[r.ward][r.bed_number - 1] = r.status;
       freshDc[r.ward][r.bed_number - 1] = r.dc_type || null;
+      freshTr[r.ward][r.bed_number - 1] = r.transfer_to || null;
     }
   });
   state = fresh;
   dcTypes = freshDc;
+  transferTos = freshTr;
   buildTabs();
   buildMapArea();
   renderAll();
@@ -1237,14 +1315,15 @@ async function fetchAdmitQueue() {
 
 /* ─── Event log + metrics ─── */
 async function logEvent(ward, eventType, durationMin, extra = {}) {
-  // extra can include: source, bed_number, ordered_at
+  // extra can include: source, bed_number, ordered_at, transfer_to
   const row = {
     ward,
-    event_type: eventType,        // 'admit_complete' | 'dc_complete'
+    event_type: eventType,
     duration_min: Math.max(0, Math.round(durationMin)),
     source: extra.source || null,
     bed_number: extra.bed_number || null,
-    ordered_at: extra.ordered_at || new Date().toISOString()
+    ordered_at: extra.ordered_at || new Date().toISOString(),
+    transfer_to: extra.transfer_to || null
   };
   const { error } = await db.from('event_log').insert(row);
   if (error) {
@@ -1259,7 +1338,7 @@ async function logEvent(ward, eventType, durationMin, extra = {}) {
 }
 
 async function fetchMetrics() {
-  const { data, error } = await db.from('event_log').select('ward, event_type, duration_min, source');
+  const { data, error } = await db.from('event_log').select('ward, event_type, duration_min, source, transfer_to');
   if (error) {
     if (error.message.includes('event_log')) {
       console.warn('event_log table not found — metrics disabled');
@@ -1273,7 +1352,7 @@ async function fetchMetrics() {
   // Aggregate per ward+type, also track source breakdown for admit
   const agg = {};
   (data || []).forEach(r => {
-    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[], transfer:[], refer:[], admit_by_source:{} };
+    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[], transfer:[], refer:[], admit_by_source:{}, transfer_by_dest:{} };
     if (r.event_type === 'admit_complete') {
       agg[r.ward].admit.push(r.duration_min);
       const src = r.source || 'UNKNOWN';
@@ -1283,6 +1362,9 @@ async function fetchMetrics() {
       agg[r.ward].dc.push(r.duration_min);
     } else if (r.event_type === 'transfer_complete') {
       agg[r.ward].transfer.push(r.duration_min);
+      const dest = r.transfer_to || 'UNKNOWN';
+      if (!agg[r.ward].transfer_by_dest[dest]) agg[r.ward].transfer_by_dest[dest] = [];
+      agg[r.ward].transfer_by_dest[dest].push(r.duration_min);
     } else if (r.event_type === 'refer_complete') {
       agg[r.ward].refer.push(r.duration_min);
     }
@@ -1293,12 +1375,19 @@ async function fetchMetrics() {
     const d = agg[ward].dc;
     const t = agg[ward].transfer;
     const r = agg[ward].refer;
-    const allClear = [...d, ...t, ...r];   // combined for HUD "DC WAIT" overall
-    // Build per-source breakdown
+    const allClear = [...d, ...t, ...r];
     const bySource = {};
     Object.keys(agg[ward].admit_by_source).forEach(src => {
       const arr = agg[ward].admit_by_source[src];
       bySource[src] = {
+        avg: Math.round(arr.reduce((s,x) => s+x, 0) / arr.length),
+        count: arr.length
+      };
+    });
+    const transferByDest = {};
+    Object.keys(agg[ward].transfer_by_dest).forEach(dest => {
+      const arr = agg[ward].transfer_by_dest[dest];
+      transferByDest[dest] = {
         avg: Math.round(arr.reduce((s,x) => s+x, 0) / arr.length),
         count: arr.length
       };
@@ -1308,14 +1397,13 @@ async function fetchMetrics() {
       admit_avg: avgArr(a),
       admit_count: a.length,
       admit_by_source: bySource,
-      // combined dc/transfer/refer for HUD
       dc_avg: avgArr(allClear),
       dc_count: allClear.length,
-      // separate breakdowns
       discharge_avg: avgArr(d),
       discharge_count: d.length,
       transfer_avg: avgArr(t),
       transfer_count: t.length,
+      transfer_by_dest: transferByDest,
       refer_avg: avgArr(r),
       refer_count: r.length
     };
@@ -1392,13 +1480,171 @@ function closeAdmitMetricsDetail() {
   document.getElementById('admitMetricsOverlay').classList.remove('active');
 }
 
+/* ─── Transfer destination picker ─── */
+let transferPickerContext = null;  // { dcOrderedBy, isClearing }
+
+function openTransferPicker(dcOrderedBy) {
+  if (!currentBed) return;
+  // Save bed since closeModal will null it
+  const savedBed = currentBed;
+  transferPickerContext = { dcOrderedBy, isClearing: false, savedBed };
+
+  const ward = WARDS.find(w => w.id === currentBed.ward);
+  document.getElementById('transferPickerSub').textContent = `${ward.name} เตียง ${currentBed.idx + 1} → เลือกปลายทาง`;
+
+  const grid = document.getElementById('transferPickerGrid');
+  grid.innerHTML = '';
+  const sourceWard = currentBed.ward;
+  TRANSFER_DESTINATIONS.forEach(dest => {
+    const btn = document.createElement('button');
+    btn.className = 'transfer-btn';
+    // Disable if dest is same as source ward
+    const isSelf = dest.id === sourceWard;
+    if (isSelf) btn.classList.add('disabled');
+    btn.innerHTML = `${dest.name}${isSelf ? '<span class="tb-sub">ward เดิม</span>' : ''}`;
+    if (!isSelf) {
+      btn.onclick = () => pickTransferDestination(dest.id);
+    }
+    grid.appendChild(btn);
+  });
+
+  closeModal();
+  currentBed = savedBed;  // restore
+  document.getElementById('transferPickerOverlay').classList.add('active');
+}
+
+function openClearTransferPicker() {
+  // Same picker but for clearing (changing destination at clear time)
+  if (!currentBed) return;
+  const savedBed = currentBed;
+  transferPickerContext = { dcOrderedBy: null, isClearing: true, savedBed };
+
+  const ward = WARDS.find(w => w.id === currentBed.ward);
+  document.getElementById('transferPickerSub').textContent = `${ward.name} เตียง ${currentBed.idx + 1} → ระบุปลายทางจริง`;
+
+  const grid = document.getElementById('transferPickerGrid');
+  grid.innerHTML = '';
+  const sourceWard = currentBed.ward;
+  TRANSFER_DESTINATIONS.forEach(dest => {
+    const btn = document.createElement('button');
+    btn.className = 'transfer-btn';
+    const isSelf = dest.id === sourceWard;
+    if (isSelf) btn.classList.add('disabled');
+    btn.innerHTML = `${dest.name}${isSelf ? '<span class="tb-sub">ward เดิม</span>' : ''}`;
+    if (!isSelf) {
+      btn.onclick = () => pickTransferDestination(dest.id);
+    }
+    grid.appendChild(btn);
+  });
+
+  closeModal();
+  currentBed = savedBed;
+  document.getElementById('transferPickerOverlay').classList.add('active');
+}
+
+function pickTransferDestination(destId) {
+  if (!transferPickerContext) return;
+  const ctx = transferPickerContext;
+  // Restore currentBed from context (extra defensive)
+  if (!currentBed && ctx.savedBed) currentBed = ctx.savedBed;
+  document.getElementById('transferPickerOverlay').classList.remove('active');
+
+  if (ctx.isClearing) {
+    // Clearing: set status back to vacant with the chosen destination
+    setStatus('vacant', null, 'transfer', destId);
+  } else {
+    // Ordering: set status to pending_dc with transfer + destination
+    setStatus('pending_dc', ctx.dcOrderedBy, 'transfer', destId);
+  }
+  transferPickerContext = null;
+}
+
+function closeTransferPicker() {
+  document.getElementById('transferPickerOverlay').classList.remove('active');
+  transferPickerContext = null;
+}
+
+/* ─── DC metrics drill-down modal ─── */
+function openDcMetricsDetail() {
+  const ward = WARDS.find(w => w.id === activeWard);
+  document.getElementById('dcMetricsSub').textContent = `${ward.name.toUpperCase()} · ตามประเภท`;
+
+  const m = metrics[activeWard];
+  const body = document.getElementById('dcMetricsBody');
+  body.innerHTML = '';
+
+  if (!m || m.dc_count === 0) {
+    body.innerHTML = '<div class="metric-empty">ยังไม่มีข้อมูลการเคลียร์เตียงในวอร์ดนี้</div>';
+    document.getElementById('dcMetricsOverlay').classList.add('active');
+    return;
+  }
+
+  // Overall summary
+  const summaryDiv = document.createElement('div');
+  summaryDiv.className = 'metric-summary-bar';
+  summaryDiv.style.cssText += 'background:var(--pending-dc-bg); border-color:var(--pending-dc);';
+  summaryDiv.innerHTML = `
+    <span class="sum-label" style="color:var(--pending-dc);">เฉลี่ยรวมทุกประเภท</span>
+    <span class="sum-value" style="color:var(--pending-dc);">${m.dc_avg}<span class="unit">นาที · ${m.dc_count} เคส</span></span>
+  `;
+  body.appendChild(summaryDiv);
+
+  // Build category list
+  const categories = [];
+  if (m.discharge_count > 0) categories.push({ key:'discharge', label:'D/C กลับบ้าน', count:m.discharge_count, avg:m.discharge_avg, color:'#ec4899' });
+  if (m.transfer_count > 0) {
+    // Add aggregated transfer + breakdown by destination
+    Object.keys(m.transfer_by_dest).forEach(dest => {
+      const d = m.transfer_by_dest[dest];
+      const destName = transferDestName(dest);
+      categories.push({ key:`transfer_${dest}`, label:`ย้าย → ${destName}`, count:d.count, avg:d.avg, color:'#3b82f6' });
+    });
+  }
+  if (m.refer_count > 0) categories.push({ key:'refer', label:'Refer ออก', count:m.refer_count, avg:m.refer_avg, color:'#7c3aed' });
+
+  // Sort by case count
+  categories.sort((a, b) => b.count - a.count);
+
+  const maxAvg = Math.max(...categories.map(c => c.avg), 1);
+
+  const list = document.createElement('div');
+  list.className = 'metric-source-list';
+  categories.forEach(item => {
+    const widthPct = Math.max(8, (item.avg / maxAvg) * 100);
+    const row = document.createElement('div');
+    row.className = 'metric-source-row';
+    row.innerHTML = `
+      <span class="src-name">${item.label}</span>
+      <div class="src-bar-wrap">
+        <div class="src-bar" style="width:${widthPct}%; background:${item.color};"></div>
+      </div>
+      <div class="src-stats">
+        <span class="avg" style="color:${item.color};">${item.avg}<span class="unit">MIN</span></span>
+        <span class="cases">${item.count} เคส</span>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+  body.appendChild(list);
+
+  document.getElementById('dcMetricsOverlay').classList.add('active');
+}
+
+function closeDcMetricsDetail() {
+  document.getElementById('dcMetricsOverlay').classList.remove('active');
+}
+
 function subscribeRealtime() {
   db.channel('beds-ch')
     .on('postgres_changes', { event:'*', schema:'public', table:'beds' }, (p) => {
       const row = p.new || p.old;
       if (!row) return;
       if (state[row.ward] && row.bed_number >= 1 && row.bed_number <= state[row.ward].length) {
-        if (p.new) state[row.ward][row.bed_number - 1] = p.new.status;
+        if (p.new) {
+          state[row.ward][row.bed_number - 1] = p.new.status;
+          dcTypes[row.ward][row.bed_number - 1] = p.new.dc_type || null;
+          transferTos[row.ward][row.bed_number - 1] = p.new.transfer_to || null;
+        }
         renderAll();
       }
     })
@@ -1499,7 +1745,10 @@ function renderAll() {
         let label = shortLabel(status);
         if (status === 'pending_dc') {
           const dcType = dcTypes[w.id]?.[idx];
-          if (dcType && DC_TYPE_LABELS[dcType]) {
+          if (dcType === 'transfer') {
+            const dest = transferTos[w.id]?.[idx];
+            label = dest ? `→${TRANSFER_DESTINATIONS.find(d => d.id === dest)?.short || dest}` : 'ย้าย';
+          } else if (dcType && DC_TYPE_LABELS[dcType]) {
             label = DC_TYPE_LABELS[dcType];
           }
         }
@@ -1594,7 +1843,7 @@ function openModal(wardId, idx) {
   if (currentRole === 'doctor') {
     if (status === 'occupied') {
       addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'จำหน่ายกลับบ้าน · พยาบาลเคลียร์ต่อ', () => setStatus('pending_dc', 'doctor', 'discharge'));
-      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น', () => setStatus('pending_dc', 'doctor', 'transfer'));
+      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น (เลือกปลายทาง)', () => openTransferPicker('doctor'));
       addAction(actions, 'btn-refer', 'สั่ง Refer', 'ส่งโรงพยาบาลอื่น', () => setStatus('pending_dc', 'doctor', 'refer'));
     } else if (status === 'pending_dc') {
       const curType = dcTypes[wardId]?.[idx] || 'discharge';
@@ -1628,14 +1877,19 @@ function openModal(wardId, idx) {
       }
       addAction(actions, 'btn-discharge-done', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
     } else if (status === 'occupied') {
-      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น', () => setStatus('pending_dc', 'nurse-doctor-equiv', 'transfer'));
+      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น (เลือกปลายทาง)', () => openTransferPicker('nurse-doctor-equiv'));
       addAction(actions, 'btn-discharge-order', 'สั่ง D/C ฉุกเฉิน', 'ใช้กรณีหมอสั่งวาจา/รีบ', () => setStatus('pending_dc', 'nurse', 'discharge'));
     } else if (status === 'pending_dc') {
       // Show what doctor ordered and let nurse confirm/change at clear time
       const curType = dcTypes[wardId]?.[idx] || 'discharge';
+      const curTransferTo = transferTos[wardId]?.[idx] || null;
       const note = document.createElement('div');
       note.style.cssText = 'background:var(--reserved-bg); padding:11px 13px; border-radius:9px; font-size:12px; color:#92400e; line-height:1.5; margin-bottom:6px; border:1.5px solid var(--reserved);';
-      note.innerHTML = `แพทย์สั่ง: <strong>${DC_TYPE_FULL[curType]}</strong>`;
+      let originText = DC_TYPE_FULL[curType];
+      if (curType === 'transfer' && curTransferTo) {
+        originText += ` → <strong>${transferDestName(curTransferTo)}</strong>`;
+      }
+      note.innerHTML = `แพทย์สั่ง: <strong>${originText}</strong>`;
       actions.appendChild(note);
 
       const subnote = document.createElement('div');
@@ -1643,16 +1897,34 @@ function openModal(wardId, idx) {
       subnote.textContent = 'กดปุ่มที่ตรงกับสิ่งที่เกิดขึ้นจริง:';
       actions.appendChild(subnote);
 
-      const optionMap = [
-        { type:'discharge', cls:'btn-discharge-done', label:'คนไข้ออก (D/C) ✓', desc:'จำหน่ายกลับบ้าน · เคลียร์เตียง' },
-        { type:'transfer',  cls:'btn-transfer',       label:'ย้าย Ward ✓',         desc:'ย้ายไป ward อื่น · เคลียร์เตียง' },
-        { type:'refer',     cls:'btn-refer',          label:'Refer ออก ✓',         desc:'ส่งโรงพยาบาลอื่น · เคลียร์เตียง' }
-      ];
-      optionMap.forEach(opt => {
-        const matchOrigin = opt.type === curType;
-        const labelMark = matchOrigin ? `${opt.label} (ตามที่หมอสั่ง)` : opt.label;
-        addAction(actions, opt.cls, labelMark, opt.desc, () => setStatus('vacant', null, opt.type));
-      });
+      // 1) D/C button
+      {
+        const matchOrigin = curType === 'discharge';
+        const label = matchOrigin ? 'คนไข้ออก (D/C) ✓ (ตามที่หมอสั่ง)' : 'คนไข้ออก (D/C) ✓';
+        addAction(actions, 'btn-discharge-done', label, 'จำหน่ายกลับบ้าน · เคลียร์เตียง', () => setStatus('vacant', null, 'discharge'));
+      }
+
+      // 2) Transfer button - if doctor already specified destination, show it; otherwise need to pick
+      {
+        if (curType === 'transfer' && curTransferTo) {
+          // Doctor already specified destination - confirm same
+          const destName = transferDestName(curTransferTo);
+          addAction(actions, 'btn-transfer', `ย้าย → ${destName} ✓ (ตามที่หมอสั่ง)`, `เคลียร์เตียง · ย้ายไป ${destName}`,
+            () => setStatus('vacant', null, 'transfer', curTransferTo));
+          // Also offer "change destination"
+          addAction(actions, 'btn-transfer', 'ย้าย → ปลายทางอื่น', 'เปลี่ยนปลายทางจากที่หมอสั่ง', () => openClearTransferPicker());
+        } else {
+          // No destination set yet - need to pick
+          addAction(actions, 'btn-transfer', 'ย้าย Ward ✓', 'เลือกปลายทาง · เคลียร์เตียง', () => openClearTransferPicker());
+        }
+      }
+
+      // 3) Refer button
+      {
+        const matchOrigin = curType === 'refer';
+        const label = matchOrigin ? 'Refer ออก ✓ (ตามที่หมอสั่ง)' : 'Refer ออก ✓';
+        addAction(actions, 'btn-refer', label, 'ส่งโรงพยาบาลอื่น · เคลียร์เตียง', () => setStatus('vacant', null, 'refer'));
+      }
 
       addAction(actions, 'btn-occupy', 'ยกเลิก คนไข้ยังอยู่', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
     }
@@ -1672,35 +1944,39 @@ function closeModal() {
   currentBed = null;
 }
 
-async function setStatus(newStatus, dcOrderedBy = null, dcType = null) {
+async function setStatus(newStatus, dcOrderedBy = null, dcType = null, transferTo = null) {
   if (!currentBed) return;
   const { ward, idx } = currentBed;
   const prevStatus = state[ward][idx];
 
-  // Capture timestamp + who ordered + dc type (for log event)
+  // Capture timestamp + who ordered + dc type + transfer_to (for log event)
   let dcOrderedAt = null;
   let dcOrderedByDb = null;
   let dcTypeDb = null;
+  let transferToDb = null;
   if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
     const { data } = await db.from('beds')
-      .select('updated_at, dc_ordered_by, dc_type')
+      .select('updated_at, dc_ordered_by, dc_type, transfer_to')
       .eq('ward', ward).eq('bed_number', idx + 1).single();
     if (data) {
       dcOrderedAt = data.updated_at;
       dcOrderedByDb = data.dc_ordered_by;
       dcTypeDb = data.dc_type;
+      transferToDb = data.transfer_to;
     }
   }
 
-  // If user passed dcType (e.g. nurse confirms different type at clear-time), use that
   const effectiveDcType = dcType || dcTypeDb || 'discharge';
+  const effectiveTransferTo = transferTo || transferToDb || null;
 
   // Optimistic UI update
   state[ward][idx] = newStatus;
   if (newStatus === 'pending_dc') {
     dcTypes[ward][idx] = dcType || 'discharge';
+    transferTos[ward][idx] = (dcType === 'transfer') ? transferTo : null;
   } else {
     dcTypes[ward][idx] = null;
+    transferTos[ward][idx] = null;
   }
   renderAll();
   closeModal();
@@ -1710,9 +1986,11 @@ async function setStatus(newStatus, dcOrderedBy = null, dcType = null) {
   if (newStatus === 'pending_dc') {
     payload.dc_ordered_by = dcOrderedBy || currentRole || 'unknown';
     payload.dc_type = dcType || 'discharge';
+    payload.transfer_to = (dcType === 'transfer') ? transferTo : null;
   } else {
     payload.dc_ordered_by = null;
     payload.dc_type = null;
+    payload.transfer_to = null;
   }
 
   const { error } = await db.from('beds').update(payload)
@@ -1726,19 +2004,27 @@ async function setStatus(newStatus, dcOrderedBy = null, dcType = null) {
   // Log completion event UNLESS nurse explicitly ordered (skip metric for nurse-emergency D/C)
   if (prevStatus === 'pending_dc' && newStatus === 'vacant' && dcOrderedAt && dcOrderedByDb !== 'nurse') {
     const durationMin = (Date.now() - new Date(dcOrderedAt).getTime()) / 60000;
-    // event_type: dc_complete | transfer_complete | refer_complete
     const eventType = effectiveDcType === 'transfer' ? 'transfer_complete'
                     : effectiveDcType === 'refer'    ? 'refer_complete'
                     : 'dc_complete';
     logEvent(ward, eventType, durationMin, {
       bed_number: idx + 1,
-      ordered_at: dcOrderedAt
+      ordered_at: dcOrderedAt,
+      transfer_to: effectiveDcType === 'transfer' ? effectiveTransferTo : null
     }).catch(err => console.warn('logEvent failed:', err));
-    showToast(`เคลียร์เตียงแล้ว (${DC_TYPE_LABELS[effectiveDcType]}) · รอ ${Math.round(durationMin)} นาที`);
+    let label = DC_TYPE_LABELS[effectiveDcType];
+    if (effectiveDcType === 'transfer' && effectiveTransferTo) {
+      label = `ย้าย→${TRANSFER_DESTINATIONS.find(d => d.id === effectiveTransferTo)?.short || effectiveTransferTo}`;
+    }
+    showToast(`เคลียร์เตียงแล้ว (${label}) · รอ ${Math.round(durationMin)} นาที`);
   } else if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
     showToast(`เคลียร์เตียงแล้ว (ฉุกเฉิน)`);
   } else if (newStatus === 'pending_dc') {
-    showToast(`อัพเดท → สั่ง ${DC_TYPE_LABELS[dcType || 'discharge']}`);
+    let label = DC_TYPE_LABELS[dcType || 'discharge'];
+    if (dcType === 'transfer' && transferTo) {
+      label = `ย้าย→${TRANSFER_DESTINATIONS.find(d => d.id === transferTo)?.short || transferTo}`;
+    }
+    showToast(`อัพเดท → สั่ง ${label}`);
   } else {
     showToast(`อัพเดท → ${STATUS_LABELS[newStatus]}`);
   }
@@ -2122,18 +2408,40 @@ function buildMonthlyReportHTML(rows, monthVal, wardVal, out) {
     </div>
   `;
 
-  // Breakdown 3 categories
+  // Breakdown by category (transfer broken into destinations)
   if (allClear.length > 0) {
     html += `<div class="mr-section">
       <div class="mr-section-title">◆ เคลียร์เตียง แยกประเภท</div>`;
-    const dcCats = [
-      { label:'D/C กลับบ้าน', count: discharges.length, avg: dischargeAvg, color:'#ec4899' },
-      { label:'ย้าย Ward',     count: transfers.length,  avg: transferAvg,  color:'#3b82f6' },
-      { label:'Refer ออก',     count: refers.length,     avg: referAvg,     color:'#7c3aed' }
-    ];
-    const maxClearAvg = Math.max(dischargeAvg, transferAvg, referAvg, 1);
+
+    // Build category list
+    const dcCats = [];
+    if (discharges.length > 0) {
+      dcCats.push({ label:'D/C กลับบ้าน', count: discharges.length, avg: dischargeAvg, color:'#ec4899' });
+    }
+    // Transfer broken into destinations
+    if (transfers.length > 0) {
+      const transferByDest = {};
+      transfers.forEach(t => {
+        const dest = t.transfer_to || 'UNKNOWN';
+        if (!transferByDest[dest]) transferByDest[dest] = [];
+        transferByDest[dest].push(t.duration_min);
+      });
+      Object.keys(transferByDest).forEach(dest => {
+        const arr = transferByDest[dest];
+        const destLabel = transferDestName(dest);
+        const avgVal = Math.round(arr.reduce((s,x) => s+x, 0) / arr.length);
+        dcCats.push({ label:`ย้าย → ${destLabel}`, count: arr.length, avg: avgVal, color:'#3b82f6' });
+      });
+    }
+    if (refers.length > 0) {
+      dcCats.push({ label:'Refer ออก', count: refers.length, avg: referAvg, color:'#7c3aed' });
+    }
+
+    // Sort by count
+    dcCats.sort((a, b) => b.count - a.count);
+
+    const maxClearAvg = Math.max(...dcCats.map(c => c.avg), 1);
     dcCats.forEach(cat => {
-      if (cat.count === 0) return;  // skip empty
       const widthPct = Math.max(8, (cat.avg / maxClearAvg) * 100);
       html += `
         <div class="mr-source-row">
@@ -2234,7 +2542,7 @@ function showToast(msg) {
 }
 
 /* Click outside to close modals */
-['modalOverlay','admitOrderOverlay','admitQueueOverlay','pickQueueOverlay','reportOverlay','admitMetricsOverlay'].forEach(id => {
+['modalOverlay','admitOrderOverlay','admitQueueOverlay','pickQueueOverlay','reportOverlay','admitMetricsOverlay','transferPickerOverlay','dcMetricsOverlay'].forEach(id => {
   document.getElementById(id).addEventListener('click', (e) => {
     if (e.target.id === id) {
       if (id === 'modalOverlay') closeModal();
@@ -2243,6 +2551,8 @@ function showToast(msg) {
       else if (id === 'pickQueueOverlay') closePickQueueModal();
       else if (id === 'reportOverlay') closeReportModal();
       else if (id === 'admitMetricsOverlay') closeAdmitMetricsDetail();
+      else if (id === 'transferPickerOverlay') closeTransferPicker();
+      else if (id === 'dcMetricsOverlay') closeDcMetricsDetail();
     }
   });
 });
