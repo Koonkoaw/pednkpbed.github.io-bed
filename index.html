@@ -214,13 +214,13 @@ body {
   transform:translate(2px,2px);
   box-shadow: 1px 1px 0 var(--ink);
 }
-.hud-card.clickable::after {
-  content:'▸';
+.hud-arrow {
   position:absolute;
   bottom:5px; right:6px;
-  font-size:9px;
+  font-size:10px;
   color:#FFD600;
   animation:blink 1.2s steps(2,end) infinite;
+  pointer-events:none;
 }
 @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:.3;} }
 
@@ -233,9 +233,9 @@ body {
 }
 .metric-source-row {
   display:grid;
-  grid-template-columns: 70px 1fr auto;
+  grid-template-columns: minmax(95px, auto) 1fr auto;
   align-items:center;
-  gap:10px;
+  gap:9px;
   padding:10px 12px;
   background:var(--bg);
   border:1.5px solid var(--line);
@@ -246,6 +246,7 @@ body {
   font-size:11px;
   color:var(--ink);
   letter-spacing:.03em;
+  white-space:nowrap;
 }
 .metric-source-row .src-bar-wrap {
   position:relative;
@@ -889,6 +890,7 @@ body {
         <span class="hud-unit">MIN</span>
       </div>
       <div class="hud-count" id="metricAdmitCount">0 CASE</div>
+      <span class="hud-arrow">▸</span>
     </div>
     <div class="hud-card dc clickable" onclick="openDcMetricsDetail()">
       <div class="hud-row">
@@ -900,6 +902,7 @@ body {
         <span class="hud-unit">MIN</span>
       </div>
       <div class="hud-count" id="metricDcCount">0 CASE</div>
+      <span class="hud-arrow">▸</span>
     </div>
   </div>
 
@@ -1420,17 +1423,21 @@ function renderMetrics() {
 }
 
 /* ─── Admit metrics drill-down modal ─── */
-function openAdmitMetricsDetail() {
+async function openAdmitMetricsDetail() {
   const ward = WARDS.find(w => w.id === activeWard);
   document.getElementById('admitMetricsSub').textContent = `${ward.name.toUpperCase()} · ตามต้นทาง`;
 
-  const m = metrics[activeWard];
   const body = document.getElementById('admitMetricsBody');
+  body.innerHTML = '<div class="metric-empty">กำลังโหลด...</div>';
+  document.getElementById('admitMetricsOverlay').classList.add('active');
+
+  await fetchMetrics();
+
+  const m = metrics[activeWard];
   body.innerHTML = '';
 
   if (!m || m.admit_count === 0) {
     body.innerHTML = '<div class="metric-empty">ยังไม่มีข้อมูล admit ที่จบในวอร์ดนี้</div>';
-    document.getElementById('admitMetricsOverlay').classList.add('active');
     return;
   }
 
@@ -1472,8 +1479,6 @@ function openAdmitMetricsDetail() {
     list.appendChild(row);
   });
   body.appendChild(list);
-
-  document.getElementById('admitMetricsOverlay').classList.add('active');
 }
 
 function closeAdmitMetricsDetail() {
@@ -1565,17 +1570,22 @@ function closeTransferPicker() {
 }
 
 /* ─── DC metrics drill-down modal ─── */
-function openDcMetricsDetail() {
+async function openDcMetricsDetail() {
   const ward = WARDS.find(w => w.id === activeWard);
-  document.getElementById('dcMetricsSub').textContent = `${ward.name.toUpperCase()} · ตามประเภท`;
+  document.getElementById('dcMetricsSub').textContent = `${ward.name.toUpperCase()} · BY TYPE`;
+
+  const body = document.getElementById('dcMetricsBody');
+  body.innerHTML = '<div class="metric-empty">LOADING...</div>';
+  document.getElementById('dcMetricsOverlay').classList.add('active');
+
+  // Fetch latest metrics before rendering
+  await fetchMetrics();
 
   const m = metrics[activeWard];
-  const body = document.getElementById('dcMetricsBody');
   body.innerHTML = '';
 
   if (!m || m.dc_count === 0) {
-    body.innerHTML = '<div class="metric-empty">ยังไม่มีข้อมูลการเคลียร์เตียงในวอร์ดนี้</div>';
-    document.getElementById('dcMetricsOverlay').classList.add('active');
+    body.innerHTML = '<div class="metric-empty">NO DATA YET</div>';
     return;
   }
 
@@ -1584,23 +1594,33 @@ function openDcMetricsDetail() {
   summaryDiv.className = 'metric-summary-bar';
   summaryDiv.style.cssText += 'background:var(--pending-dc-bg); border-color:var(--pending-dc);';
   summaryDiv.innerHTML = `
-    <span class="sum-label" style="color:var(--pending-dc);">เฉลี่ยรวมทุกประเภท</span>
-    <span class="sum-value" style="color:var(--pending-dc);">${m.dc_avg}<span class="unit">นาที · ${m.dc_count} เคส</span></span>
+    <span class="sum-label" style="color:var(--pending-dc); font-family:var(--font-pixel); font-size:10px; letter-spacing:.05em;">TOTAL AVG</span>
+    <span class="sum-value" style="color:var(--pending-dc);">${m.dc_avg}<span class="unit">MIN · ${m.dc_count} CASE</span></span>
   `;
   body.appendChild(summaryDiv);
 
   // Build category list
   const categories = [];
-  if (m.discharge_count > 0) categories.push({ key:'discharge', label:'D/C กลับบ้าน', count:m.discharge_count, avg:m.discharge_avg, color:'#ec4899' });
-  if (m.transfer_count > 0) {
-    // Add aggregated transfer + breakdown by destination
+  if (m.discharge_count > 0) {
+    categories.push({ key:'discharge', label:'DISCHARGE', count:m.discharge_count, avg:m.discharge_avg, color:'#ec4899' });
+  }
+  if (m.transfer_count > 0 && m.transfer_by_dest) {
     Object.keys(m.transfer_by_dest).forEach(dest => {
       const d = m.transfer_by_dest[dest];
-      const destName = transferDestName(dest);
-      categories.push({ key:`transfer_${dest}`, label:`ย้าย → ${destName}`, count:d.count, avg:d.avg, color:'#3b82f6' });
+      const destShort = TRANSFER_DESTINATIONS.find(x => x.id === dest)?.short || dest;
+      // Convert "พิเศษ" to "VIP" for English consistency
+      const enDest = destShort === 'พิเศษ' ? 'VIP' : destShort;
+      categories.push({ key:`transfer_${dest}`, label:`TRANSFER ${enDest}`, count:d.count, avg:d.avg, color:'#3b82f6' });
     });
   }
-  if (m.refer_count > 0) categories.push({ key:'refer', label:'Refer ออก', count:m.refer_count, avg:m.refer_avg, color:'#7c3aed' });
+  if (m.refer_count > 0) {
+    categories.push({ key:'refer', label:'REFER OUT', count:m.refer_count, avg:m.refer_avg, color:'#7c3aed' });
+  }
+
+  if (categories.length === 0) {
+    body.innerHTML += '<div class="metric-empty">' + m.dc_count + ' CASE WITHOUT BREAKDOWN<br><small>(LEGACY DATA)</small></div>';
+    return;
+  }
 
   // Sort by case count
   categories.sort((a, b) => b.count - a.count);
@@ -1613,21 +1633,20 @@ function openDcMetricsDetail() {
     const widthPct = Math.max(8, (item.avg / maxAvg) * 100);
     const row = document.createElement('div');
     row.className = 'metric-source-row';
+    row.style.cssText = 'font-family:var(--font-pixel);';
     row.innerHTML = `
-      <span class="src-name">${item.label}</span>
+      <span class="src-name" style="font-family:var(--font-pixel); font-size:9px; letter-spacing:.04em;">${item.label}</span>
       <div class="src-bar-wrap">
         <div class="src-bar" style="width:${widthPct}%; background:${item.color};"></div>
       </div>
       <div class="src-stats">
-        <span class="avg" style="color:${item.color};">${item.avg}<span class="unit">MIN</span></span>
-        <span class="cases">${item.count} เคส</span>
+        <span class="avg" style="color:${item.color}; font-family:var(--font-pixel); font-size:13px;">${item.avg}<span class="unit" style="font-family:var(--font-pixel); font-size:8px;">MIN</span></span>
+        <span class="cases" style="font-family:var(--font-pixel); font-size:8px; letter-spacing:.05em;">${item.count} CASE</span>
       </div>
     `;
     list.appendChild(row);
   });
   body.appendChild(list);
-
-  document.getElementById('dcMetricsOverlay').classList.add('active');
 }
 
 function closeDcMetricsDetail() {
