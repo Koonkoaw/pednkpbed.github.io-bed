@@ -625,6 +625,10 @@ body {
 .action-btn.btn-discharge-done .desc { color:#15803d; }
 .action-btn.btn-occupy { background:var(--occupied-bg); border-color:var(--occupied); color:var(--occupied); }
 .action-btn.btn-occupy .desc { color:#b91c1c; }
+.action-btn.btn-transfer { background:#eff6ff; border-color:#60a5fa; color:#1d4ed8; }
+.action-btn.btn-transfer .desc { color:#1e40af; }
+.action-btn.btn-refer { background:#f5f3ff; border-color:#a78bfa; color:#6d28d9; }
+.action-btn.btn-refer .desc { color:#5b21b6; }
 .modal-close { width:100%; margin-top:6px; padding:10px; background:transparent; border:1px solid var(--line); border-radius:9px; color:var(--ink-soft); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }
 
 .source-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; margin-bottom:12px; }
@@ -1081,6 +1085,17 @@ const WARDS = [
 ];
 
 const STATUS_LABELS = { vacant:'ว่างจริง', occupied:'มีคนไข้', pending_dc:'สั่ง D/C รอคนไข้ออก', reserved:'จองรอเข้า' };
+
+const DC_TYPE_LABELS = {
+  discharge: 'D/C',
+  transfer:  'ย้าย',
+  refer:     'Refer'
+};
+const DC_TYPE_FULL = {
+  discharge: 'D/C กลับบ้าน',
+  transfer:  'ย้าย Ward',
+  refer:     'Refer ต่อ'
+};
 const SOURCES = [
   { id:'ER', name:'ER', desc:'ห้องฉุกเฉิน' },
   { id:'OPD', name:'OPD', desc:'ผู้ป่วยนอก' },
@@ -1103,6 +1118,7 @@ const EMBEDDED_KEY = 'sb_publishable_RlcGZ2RC6pbnj-5-5vq_kA_Z_85PP4q';
 /* ═════════════ State ═════════════ */
 let db = null;
 let state = freshState();
+let dcTypes = freshDcTypes();   // { ward: [dc_type or null per bed] } — parallel to state
 let admitQueue = [];
 let metrics = {};   // { ward_id: { admit_avg, admit_count, dc_avg, dc_count } }
 let activeWard = WARDS[0].id;
@@ -1115,6 +1131,11 @@ let reportShift = null;
 function freshState() {
   const s = {};
   WARDS.forEach(w => { s[w.id] = Array.from({length:w.count}, () => 'vacant'); });
+  return s;
+}
+function freshDcTypes() {
+  const s = {};
+  WARDS.forEach(w => { s[w.id] = Array.from({length:w.count}, () => null); });
   return s;
 }
 
@@ -1184,12 +1205,15 @@ async function fetchAll() {
   const { data, error } = await db.from('beds').select('*');
   if (error) { showToast('โหลดข้อมูลไม่สำเร็จ'); return; }
   const fresh = freshState();
+  const freshDc = freshDcTypes();
   data.forEach(r => {
     if (fresh[r.ward] && r.bed_number >= 1 && r.bed_number <= fresh[r.ward].length) {
       fresh[r.ward][r.bed_number - 1] = r.status;
+      freshDc[r.ward][r.bed_number - 1] = r.dc_type || null;
     }
   });
   state = fresh;
+  dcTypes = freshDc;
   buildTabs();
   buildMapArea();
   renderAll();
@@ -1249,7 +1273,7 @@ async function fetchMetrics() {
   // Aggregate per ward+type, also track source breakdown for admit
   const agg = {};
   (data || []).forEach(r => {
-    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[], admit_by_source:{} };
+    if (!agg[r.ward]) agg[r.ward] = { admit:[], dc:[], transfer:[], refer:[], admit_by_source:{} };
     if (r.event_type === 'admit_complete') {
       agg[r.ward].admit.push(r.duration_min);
       const src = r.source || 'UNKNOWN';
@@ -1257,12 +1281,19 @@ async function fetchMetrics() {
       agg[r.ward].admit_by_source[src].push(r.duration_min);
     } else if (r.event_type === 'dc_complete') {
       agg[r.ward].dc.push(r.duration_min);
+    } else if (r.event_type === 'transfer_complete') {
+      agg[r.ward].transfer.push(r.duration_min);
+    } else if (r.event_type === 'refer_complete') {
+      agg[r.ward].refer.push(r.duration_min);
     }
   });
   metrics = {};
   Object.keys(agg).forEach(ward => {
     const a = agg[ward].admit;
     const d = agg[ward].dc;
+    const t = agg[ward].transfer;
+    const r = agg[ward].refer;
+    const allClear = [...d, ...t, ...r];   // combined for HUD "DC WAIT" overall
     // Build per-source breakdown
     const bySource = {};
     Object.keys(agg[ward].admit_by_source).forEach(src => {
@@ -1272,12 +1303,21 @@ async function fetchMetrics() {
         count: arr.length
       };
     });
+    const avgArr = arr => arr.length ? Math.round(arr.reduce((s,x) => s+x, 0) / arr.length) : null;
     metrics[ward] = {
-      admit_avg: a.length ? Math.round(a.reduce((s,x) => s+x, 0) / a.length) : null,
+      admit_avg: avgArr(a),
       admit_count: a.length,
       admit_by_source: bySource,
-      dc_avg: d.length ? Math.round(d.reduce((s,x) => s+x, 0) / d.length) : null,
-      dc_count: d.length
+      // combined dc/transfer/refer for HUD
+      dc_avg: avgArr(allClear),
+      dc_count: allClear.length,
+      // separate breakdowns
+      discharge_avg: avgArr(d),
+      discharge_count: d.length,
+      transfer_avg: avgArr(t),
+      transfer_count: t.length,
+      refer_avg: avgArr(r),
+      refer_count: r.length
     };
   });
   renderMetrics();
@@ -1455,7 +1495,15 @@ function renderAll() {
         const status = state[w.id][idx] || 'vacant';
         const bed = document.createElement('div');
         bed.className = 'bed ' + statusClass(status);
-        bed.innerHTML = `<span class="bed-num">${bn}</span><span class="bed-label">${shortLabel(status)}</span>`;
+        // For pending_dc beds, show the DC type instead of generic "D/C·ย้าย"
+        let label = shortLabel(status);
+        if (status === 'pending_dc') {
+          const dcType = dcTypes[w.id]?.[idx];
+          if (dcType && DC_TYPE_LABELS[dcType]) {
+            label = DC_TYPE_LABELS[dcType];
+          }
+        }
+        bed.innerHTML = `<span class="bed-num">${bn}</span><span class="bed-label">${label}</span>`;
         bed.onclick = () => openModal(w.id, idx);
         grid.appendChild(bed);
       });
@@ -1545,9 +1593,12 @@ function openModal(wardId, idx) {
 
   if (currentRole === 'doctor') {
     if (status === 'occupied') {
-      addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'พยาบาลจะเคลียร์เตียงต่อ', () => setStatus('pending_dc', 'doctor'));
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C', 'จำหน่ายกลับบ้าน · พยาบาลเคลียร์ต่อ', () => setStatus('pending_dc', 'doctor', 'discharge'));
+      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น', () => setStatus('pending_dc', 'doctor', 'transfer'));
+      addAction(actions, 'btn-refer', 'สั่ง Refer', 'ส่งโรงพยาบาลอื่น', () => setStatus('pending_dc', 'doctor', 'refer'));
     } else if (status === 'pending_dc') {
-      addAction(actions, 'btn-occupy', 'ยกเลิกคำสั่ง D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+      const curType = dcTypes[wardId]?.[idx] || 'discharge';
+      addAction(actions, 'btn-occupy', 'ยกเลิกคำสั่ง', `ยกเลิก "${DC_TYPE_LABELS[curType]}" · กลับเป็นเตียงเต็ม`, () => setStatus('occupied'));
     } else {
       const note = document.createElement('div');
       note.style.cssText = 'background:var(--bg); padding:13px; border-radius:9px; font-size:12px; color:var(--ink-soft); text-align:center; line-height:1.5;';
@@ -1577,10 +1628,33 @@ function openModal(wardId, idx) {
       }
       addAction(actions, 'btn-discharge-done', 'ยกเลิกการจอง', 'กลับเป็นเตียงว่าง', () => setStatus('vacant'));
     } else if (status === 'occupied') {
-      addAction(actions, 'btn-discharge-order', 'สั่ง D/C (ฉุกเฉิน)', 'ไม่นับ metric · ปกติแพทย์เป็นคนสั่ง', () => setStatus('pending_dc', 'nurse'));
+      addAction(actions, 'btn-transfer', 'สั่ง ย้าย Ward', 'ย้ายไป ward อื่น', () => setStatus('pending_dc', 'nurse-doctor-equiv', 'transfer'));
+      addAction(actions, 'btn-discharge-order', 'สั่ง D/C ฉุกเฉิน', 'ใช้กรณีหมอสั่งวาจา/รีบ', () => setStatus('pending_dc', 'nurse', 'discharge'));
     } else if (status === 'pending_dc') {
-      addAction(actions, 'btn-discharge-done', 'คนไข้ออกแล้ว ✓', 'เคลียร์เตียง → ว่าง', () => setStatus('vacant'));
-      addAction(actions, 'btn-occupy', 'ยกเลิก D/C', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
+      // Show what doctor ordered and let nurse confirm/change at clear time
+      const curType = dcTypes[wardId]?.[idx] || 'discharge';
+      const note = document.createElement('div');
+      note.style.cssText = 'background:var(--reserved-bg); padding:11px 13px; border-radius:9px; font-size:12px; color:#92400e; line-height:1.5; margin-bottom:6px; border:1.5px solid var(--reserved);';
+      note.innerHTML = `แพทย์สั่ง: <strong>${DC_TYPE_FULL[curType]}</strong>`;
+      actions.appendChild(note);
+
+      const subnote = document.createElement('div');
+      subnote.style.cssText = 'font-size:11px; color:var(--ink-muted); margin:8px 4px 4px; font-weight:600;';
+      subnote.textContent = 'กดปุ่มที่ตรงกับสิ่งที่เกิดขึ้นจริง:';
+      actions.appendChild(subnote);
+
+      const optionMap = [
+        { type:'discharge', cls:'btn-discharge-done', label:'คนไข้ออก (D/C) ✓', desc:'จำหน่ายกลับบ้าน · เคลียร์เตียง' },
+        { type:'transfer',  cls:'btn-transfer',       label:'ย้าย Ward ✓',         desc:'ย้ายไป ward อื่น · เคลียร์เตียง' },
+        { type:'refer',     cls:'btn-refer',          label:'Refer ออก ✓',         desc:'ส่งโรงพยาบาลอื่น · เคลียร์เตียง' }
+      ];
+      optionMap.forEach(opt => {
+        const matchOrigin = opt.type === curType;
+        const labelMark = matchOrigin ? `${opt.label} (ตามที่หมอสั่ง)` : opt.label;
+        addAction(actions, opt.cls, labelMark, opt.desc, () => setStatus('vacant', null, opt.type));
+      });
+
+      addAction(actions, 'btn-occupy', 'ยกเลิก คนไข้ยังอยู่', 'กลับเป็นเตียงเต็ม', () => setStatus('occupied'));
     }
   }
   document.getElementById('modalOverlay').classList.add('active');
@@ -1598,36 +1672,47 @@ function closeModal() {
   currentBed = null;
 }
 
-async function setStatus(newStatus, dcOrderedBy = null) {
+async function setStatus(newStatus, dcOrderedBy = null, dcType = null) {
   if (!currentBed) return;
   const { ward, idx } = currentBed;
   const prevStatus = state[ward][idx];
 
-  // Capture timestamp + who ordered (for dc_complete log)
+  // Capture timestamp + who ordered + dc type (for log event)
   let dcOrderedAt = null;
   let dcOrderedByDb = null;
+  let dcTypeDb = null;
   if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
     const { data } = await db.from('beds')
-      .select('updated_at, dc_ordered_by')
+      .select('updated_at, dc_ordered_by, dc_type')
       .eq('ward', ward).eq('bed_number', idx + 1).single();
     if (data) {
       dcOrderedAt = data.updated_at;
       dcOrderedByDb = data.dc_ordered_by;
+      dcTypeDb = data.dc_type;
     }
   }
 
+  // If user passed dcType (e.g. nurse confirms different type at clear-time), use that
+  const effectiveDcType = dcType || dcTypeDb || 'discharge';
+
+  // Optimistic UI update
   state[ward][idx] = newStatus;
+  if (newStatus === 'pending_dc') {
+    dcTypes[ward][idx] = dcType || 'discharge';
+  } else {
+    dcTypes[ward][idx] = null;
+  }
   renderAll();
   closeModal();
 
   // Build update payload
   const payload = { status: newStatus, updated_at: new Date().toISOString() };
   if (newStatus === 'pending_dc') {
-    // Mark who ordered the D/C
     payload.dc_ordered_by = dcOrderedBy || currentRole || 'unknown';
+    payload.dc_type = dcType || 'discharge';
   } else {
-    // Clear dc_ordered_by when bed leaves pending_dc
     payload.dc_ordered_by = null;
+    payload.dc_type = null;
   }
 
   const { error } = await db.from('beds').update(payload)
@@ -1638,17 +1723,22 @@ async function setStatus(newStatus, dcOrderedBy = null) {
     return;
   }
 
-  // Log dc_complete UNLESS nurse explicitly ordered (default counts: doctor or unknown)
+  // Log completion event UNLESS nurse explicitly ordered (skip metric for nurse-emergency D/C)
   if (prevStatus === 'pending_dc' && newStatus === 'vacant' && dcOrderedAt && dcOrderedByDb !== 'nurse') {
     const durationMin = (Date.now() - new Date(dcOrderedAt).getTime()) / 60000;
-    await logEvent(ward, 'dc_complete', durationMin, {
+    // event_type: dc_complete | transfer_complete | refer_complete
+    const eventType = effectiveDcType === 'transfer' ? 'transfer_complete'
+                    : effectiveDcType === 'refer'    ? 'refer_complete'
+                    : 'dc_complete';
+    logEvent(ward, eventType, durationMin, {
       bed_number: idx + 1,
       ordered_at: dcOrderedAt
-    });
-    showToast(`เคลียร์เตียงแล้ว · รอออก ${Math.round(durationMin)} นาที`);
+    }).catch(err => console.warn('logEvent failed:', err));
+    showToast(`เคลียร์เตียงแล้ว (${DC_TYPE_LABELS[effectiveDcType]}) · รอ ${Math.round(durationMin)} นาที`);
   } else if (prevStatus === 'pending_dc' && newStatus === 'vacant') {
-    // Nurse-ordered DC: don't log (skip metric)
-    showToast('เคลียร์เตียงแล้ว (ฉุกเฉิน · ไม่นับ metric)');
+    showToast(`เคลียร์เตียงแล้ว (ฉุกเฉิน)`);
+  } else if (newStatus === 'pending_dc') {
+    showToast(`อัพเดท → สั่ง ${DC_TYPE_LABELS[dcType || 'discharge']}`);
   } else {
     showToast(`อัพเดท → ${STATUS_LABELS[newStatus]}`);
   }
@@ -1966,10 +2056,16 @@ function buildMonthlyReportHTML(rows, monthVal, wardVal, out) {
 
   // Aggregate
   const admits = rows.filter(r => r.event_type === 'admit_complete');
-  const dcs = rows.filter(r => r.event_type === 'dc_complete');
+  const discharges = rows.filter(r => r.event_type === 'dc_complete');
+  const transfers = rows.filter(r => r.event_type === 'transfer_complete');
+  const refers = rows.filter(r => r.event_type === 'refer_complete');
+  const allClear = [...discharges, ...transfers, ...refers]; // combined for "DC total"
   const avg = arr => arr.length ? Math.round(arr.reduce((s,x) => s + x.duration_min, 0) / arr.length) : 0;
   const admitAvg = avg(admits);
-  const dcAvg = avg(dcs);
+  const allClearAvg = avg(allClear);
+  const dischargeAvg = avg(discharges);
+  const transferAvg = avg(transfers);
+  const referAvg = avg(refers);
 
   // Source breakdown for admit
   const bySource = {};
@@ -2002,9 +2098,9 @@ function buildMonthlyReportHTML(rows, monthVal, wardVal, out) {
           <div class="mr-stat-sub">เคสในเดือนนี้</div>
         </div>
         <div class="mr-stat-card dc">
-          <div class="mr-stat-label">D/C สำเร็จ</div>
-          <div class="mr-stat-value">${dcs.length}</div>
-          <div class="mr-stat-sub">เคสในเดือนนี้</div>
+          <div class="mr-stat-label">เคลียร์เตียงรวม</div>
+          <div class="mr-stat-value">${allClear.length}</div>
+          <div class="mr-stat-sub">D/C ${discharges.length} + ย้าย ${transfers.length} + Refer ${refers.length}</div>
         </div>
       </div>
     </div>
@@ -2018,13 +2114,36 @@ function buildMonthlyReportHTML(rows, monthVal, wardVal, out) {
           <div class="mr-stat-sub">หมอสั่ง → พยาบาลรับเข้า</div>
         </div>
         <div class="mr-stat-card dc">
-          <div class="mr-stat-label">DC Wait</div>
-          <div class="mr-stat-value">${dcAvg}<span style="font-size:11px;color:#666;"> นาที</span></div>
+          <div class="mr-stat-label">เคลียร์เตียงรวม</div>
+          <div class="mr-stat-value">${allClearAvg}<span style="font-size:11px;color:#666;"> นาที</span></div>
           <div class="mr-stat-sub">หมอสั่ง → พยาบาลเคลียร์</div>
         </div>
       </div>
     </div>
   `;
+
+  // Breakdown 3 categories
+  if (allClear.length > 0) {
+    html += `<div class="mr-section">
+      <div class="mr-section-title">◆ เคลียร์เตียง แยกประเภท</div>`;
+    const dcCats = [
+      { label:'D/C กลับบ้าน', count: discharges.length, avg: dischargeAvg, color:'#ec4899' },
+      { label:'ย้าย Ward',     count: transfers.length,  avg: transferAvg,  color:'#3b82f6' },
+      { label:'Refer ออก',     count: refers.length,     avg: referAvg,     color:'#7c3aed' }
+    ];
+    const maxClearAvg = Math.max(dischargeAvg, transferAvg, referAvg, 1);
+    dcCats.forEach(cat => {
+      if (cat.count === 0) return;  // skip empty
+      const widthPct = Math.max(8, (cat.avg / maxClearAvg) * 100);
+      html += `
+        <div class="mr-source-row">
+          <span class="src-name">${cat.label}</span>
+          <div class="src-bar-wrap"><div class="src-bar" style="width:${widthPct}%; background:${cat.color};"></div></div>
+          <span class="src-stats">${cat.count} เคส · ${cat.avg} นาที</span>
+        </div>`;
+    });
+    html += `</div>`;
+  }
 
   if (sourceList.length > 0) {
     html += `<div class="mr-section">
